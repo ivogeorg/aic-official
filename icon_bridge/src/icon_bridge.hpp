@@ -30,6 +30,7 @@
 #include "rclcpp/rclcpp.hpp"
 
 // Interfaces
+#include "aic_control_interfaces/msg/controller_state.hpp"
 #include "aic_control_interfaces/msg/joint_motion_update.hpp"
 #include "aic_control_interfaces/msg/motion_update.hpp"
 #include "aic_control_interfaces/msg/target_mode.hpp"
@@ -74,6 +75,8 @@ class IconBridge : public BridgeInterface {
       std::shared_ptr<aic_control_interfaces::srv::ChangeTargetMode::Response>
           response);
 
+  //   void PollActionStateCallback();
+
   struct Data : public std::enable_shared_from_this<Data> {
     ROSNodeInterfaces node_interfaces_;
 
@@ -96,6 +99,9 @@ class IconBridge : public BridgeInterface {
         SharedPtr joint_motion_update_sub_;
     rclcpp::Service<aic_control_interfaces::srv::ChangeTargetMode>::SharedPtr
         change_target_mode_srv_;
+
+    rclcpp::Publisher<aic_control_interfaces::msg::ControllerState>::SharedPtr
+        controller_state_pub_;
 
     std::string part_name_;
     std::size_t num_joints_;
