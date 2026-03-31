@@ -45,9 +45,11 @@ target_include_directories(icon_bridge
 )
 target_link_libraries(icon_bridge
   absl::log
+  absl::time
   agent_bridge_proto
   flowstate_ros_bridge::flowstate_ros_builtin_bridges
   rclcpp::rclcpp
+  rclcpp_components
   ${aic_control_interfaces_TARGETS}
 )
 target_compile_features(icon_bridge PUBLIC cxx_std_17)
@@ -57,10 +59,48 @@ pluginlib_export_plugin_description_file(flowstate_ros_bridge plugins.xml)
 
 #===============================================================================
 
+set(SERVICE_NAME "aic_flowstate_ros_bridge")
+
+intrinsic_sdk_generate_service_manifest(
+  SERVICE_NAME ${SERVICE_NAME}
+  MANIFEST ${SERVICE_NAME}.manifest.textproto
+  PARAMETER_DESCRIPTOR ${SERVICE_NAME}.proto
+  DEFAULT_CONFIGURATION ${SERVICE_NAME}_default_config.pbtxt
+  PROTOS_TARGET ${SERVICE_NAME}_protos
+)
+add_executable(${SERVICE_NAME}_main
+ src/${SERVICE_NAME}_main.cpp
+)
+target_include_directories(${SERVICE_NAME}_main PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_link_libraries(${SERVICE_NAME}_main
+  ${SERVICE_NAME}_component
+  ${SERVICE_NAME}_protos
+  rclcpp_components::component
+)
+
+# Generate the manifest and default config binarypb files
+add_dependencies(${SERVICE_NAME}_main
+  ${SERVICE_NAME}_manifest
+  ${SERVICE_NAME}_default_config
+)
+
+#===============================================================================
+
 install(TARGETS
   icon_bridge
   agent_bridge_proto
+  ${SERVICE_NAME}_main
   DESTINATION lib/${PROJECT_NAME}
+)
+
+# Install proto descriptor, manifest, and config files
+install(FILES
+  ${CMAKE_CURRENT_BINARY_DIR}/${SERVICE_NAME}_protos.desc
+  ${CMAKE_CURRENT_BINARY_DIR}/service_manifest.binarypb
+  ${CMAKE_CURRENT_BINARY_DIR}/default_config.binarypb
+  DESTINATION share/${PROJECT_NAME}/${SERVICE_NAME}
 )
 
 install(DIRECTORY config launch proto

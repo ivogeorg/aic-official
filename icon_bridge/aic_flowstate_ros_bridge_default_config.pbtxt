@@ -1,0 +1,25 @@
+# proto-file: flowstate_ros_bridge.proto
+# proto-message: FlowstateRosBridgeConfig
+# Corresponds to the message definition in flowstate_ros_bridge.proto
+[type.googleapis.com/intrinsic.FlowstateRosBridgeConfig] {
+  workcell_id: ""
+  executive_service_address: "istio-ingressgateway.app-ingress.svc.cluster.local:80"
+  skill_registry_address: "istio-ingressgateway.app-ingress.svc.cluster.local:80"
+  solution_service_address: "istio-ingressgateway.app-ingress.svc.cluster.local:80"
+  world_service_address: "istio-ingressgateway.app-ingress.svc.cluster.local:80"
+  geometry_service_address: "istio-ingressgateway.app-ingress.svc.cluster.local:80"
+  flowstate_zenoh_router_address: "tcp/zenoh-router.app-intrinsic-base.svc.cluster.local:7447"
+  external_zenoh_router_address: "tcp/zenoh-router.app-intrinsic-base.svc.cluster.local:7447"
+  bridge_plugins: [
+    "flowstate_ros_bridge::WorldBridge",
+    "flowstate_ros_bridge::ExecutiveBridge",
+    "flowstate_ros_bridge::IconBridge"
+  ],
+  executive_deadline_seconds: 5
+  executive_update_rate_millis: 1000
+  # icon_bridge_config: {
+  #   server_address: "istio-ingressgateway.app-ingress.svc.cluster.local:80"
+  #   instance: "robot"
+  #   part_name: "arm"
+  # },
+}

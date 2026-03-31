@@ -20,6 +20,7 @@
 #include <string>
 
 #include "absl/log/log.h"
+#include "absl/time/time.h"
 #include "intrinsic/icon/cc_client/operational_status.h"
 #include "intrinsic/icon/common/builtins.h"
 #include "intrinsic/util/grpc/channel.h"
@@ -27,6 +28,9 @@
 #include "intrinsic/util/proto/get_text_proto.h"
 #include "rclcpp/create_service.hpp"
 #include "rclcpp/parameter.hpp"
+
+// Interfaces
+#include "aic_control_interfaces/msg/controller_state.hpp"
 
 namespace flowstate_ros_bridge {
 constexpr const char* kServerAddressParamName = "server_address";
@@ -121,16 +125,17 @@ bool IconBridge::initialize(ROSNodeInterfaces ros_node_interfaces,
       throw std::runtime_error("ICON Server operational status is unknown.");
   }
 
-  // Get pose of TCP
   absl::StatusOr<intrinsic_proto::icon::PartStatus> part_status =
       icon_client.GetSinglePartStatus(data_->part_name_);
   if (!part_status.ok()) {
-    LOG(ERROR) << "Failed to retrieve part status from ICON Server.";
+    LOG(ERROR) << "Failed to retrieve part status from ICON Server: "
+               << part_status.status().message().data();
     throw std::runtime_error(
         "Failed to retrieve part status from ICON Server.");
   }
   data_->num_joints_ = part_status.value().joint_states_size();
-  auto base_t_tip_sensed = part_status.value().base_t_tip_sensed();
+  // todo(johntgz) remove
+  //  auto base_t_tip_sensed = part_status.value().base_t_tip_sensed();
 
   // Start ICON Session
   auto session_or =
@@ -387,10 +392,106 @@ bool IconBridge::initialize(ROSNodeInterfaces ros_node_interfaces,
           },
           rclcpp::ServicesQoS(), nullptr);
 
+  data_->controller_state_pub_ =
+      rclcpp::create_publisher<aic_control_interfaces::msg::ControllerState>(
+          topics_interface, "aic_controller/controller_state",
+          rclcpp::SystemDefaultsQoS());
+
   LOG(INFO) << "Initialized ICONBridge";
 
   return true;
 }
+
+// ///=============================================================================
+// void IconBridge::PollActionStateCallback() {
+//   if (!data_->session_) {
+//     LOG(ERROR) << "No session established for ICON Server, unable to poll "
+//                   "action states.";
+//     return;
+//   }
+
+//   aic_control_interfaces::msg::ControllerState controller_state;
+
+//   // controller_state.header.stamp = get_node()->now();
+
+//   // controller_state.reference_tcp_pose =
+//   // tf2::toMsg(last_tool_reference_.pose);
+
+//   // std::copy(last_tool_pose_error_.data(),
+//   //           last_tool_pose_error_.data() + last_tool_pose_error_.size(),
+//   //           controller_state.tcp_error.begin());
+
+//   // if (last_commanded_state_.has_value()) {
+//   //   controller_state.reference_joint_state =
+//   last_commanded_state_.value();
+//   // }
+
+//   controller_state.target_mode.mode = data_->target_mode_value_;
+
+//   // controller_state.fts_tare_offset.header.frame_id = "ati/tool_link";
+//   // utils::eigen_to_wrench_msg(tare_offset_at_tip_,
+//   //                           controller_state.fts_tare_offset.wrench);
+
+//   absl::Time now = absl::Now();
+//   absl::Time poll_deadline = now + absl::Seconds(1.0);
+
+//   if (data_->target_mode_value_ ==
+//       aic_control_interfaces::msg::TargetMode::MODE_CARTESIAN) {
+//     if (data_->agent_bridge_action_.has_value()) {
+//       absl::StatusOr<intrinsic_proto::icon::StreamingOutput> streaming_output
+//       =
+//           data_->session_->GetLatestOutput(kAgentBridgeId, poll_deadline);
+
+//       if (!streaming_output.ok()) {
+//         LOG(WARNING)
+//             << "Failed to get streaming output from AgentBridge Action: "
+//             << streaming_output.status().message().data();
+//         return;
+//       }
+
+//       intrinsic::icon::AgentBridgeInfo::StreamingOutput
+//       streaming_output_proto; if
+//       (!streaming_output.value().payload().UnpackTo(
+//               &streaming_output_proto)) {
+//         LOG(WARNING)
+//             << "Failed to get unpack streaming output from AgentBridge
+//             Action";
+//         return;
+//       }
+//       // todo(johntgz) assign controller_state message
+//     }
+//   } else if (data_->target_mode_value_ ==
+//              aic_control_interfaces::msg::TargetMode::MODE_JOINT) {
+//     if (data_->agent_bridge_joint_action_.has_value()) {
+//       absl::StatusOr<intrinsic_proto::icon::StreamingOutput> streaming_output
+//       =
+//           data_->session_->GetLatestOutput(kAgentBridgeJointId,
+//           poll_deadline);
+
+//       if (!streaming_output.ok()) {
+//         LOG(WARNING)
+//             << "Failed to get streaming output from AgentBridgeJoint Action:
+//             "
+//             << streaming_output.status().message().data();
+//         return;
+//       }
+
+//       intrinsic::icon::AgentBridgeJointInfo::StreamingOutput
+//           streaming_output_proto;
+//       if (!streaming_output.value().payload().UnpackTo(
+//               &streaming_output_proto)) {
+//         LOG(WARNING)
+//             << "Failed to get unpack streaming output from AgentBridge
+//             Action";
+//         return;
+//       }
+
+//       // todo(johntgz) assign controller_state message
+//     }
+//   }
+
+//   data_->controller_state_pub_->publish(controller_state);
+// }
 
 ///=============================================================================
 void IconBridge::ChangeTargetModeCallback(
@@ -424,7 +525,8 @@ void IconBridge::ChangeTargetModeCallback(
 
   auto status = data_->session_->StopAllActions();
   if (!status.ok()) {
-    LOG(ERROR) << "Failed to stop all actions on ICON Server.";
+    LOG(ERROR) << "Failed to stop all actions on ICON Server: "
+               << status.message().data();
     response->success = false;
     return;
   }
@@ -554,9 +656,9 @@ void IconBridge::MotionUpdateCallback(
   gains->set_ry(msg->wrench_feedback_gains_at_tip[4]);
   gains->set_rz(msg->wrench_feedback_gains_at_tip[5]);
 
-  // Set time_to_target_seconds to a default of 0.0, so it will reach the target
-  // as fast as possible
-  proto_msg.set_time_to_target_seconds(0.0);
+  // Set time_to_target_seconds to a default of 1.1 * controller period (0.002
+  // s), so it will reach the target as fast as possible
+  proto_msg.set_time_to_target_seconds(0.0022);
 
   // Write the MotionUpdate proto message to the AgentBridge action
   auto status = data_->agent_bridge_writer_->Write(proto_msg);
@@ -634,9 +736,9 @@ void IconBridge::JointMotionUpdateCallback(
     ff_torque->add_joints(t);
   }
 
-  // Set time_to_target_seconds to a default of 0.0, so it will reach the target
-  // as fast as possible
-  proto_msg.set_time_to_target_seconds(0.0);
+  // Set time_to_target_seconds to a default of 1.1 * controller period (0.002
+  // s), so it will reach the target as fast as possible
+  proto_msg.set_time_to_target_seconds(0.0022);
 
   // Write the JointMotionUpdate proto message to the AgentBridgeJoint action
   auto status = data_->agent_bridge_joint_writer_->Write(proto_msg);
@@ -650,7 +752,8 @@ void IconBridge::JointMotionUpdateCallback(
 IconBridge::Data::~Data() {
   auto status = session_->StopAllActions();
   if (!status.ok()) {
-    LOG(ERROR) << "Failed to stop all actions on ICON Server.";
+    LOG(ERROR) << "Failed to stop all actions on ICON Server: "
+               << status.message().data();
   }
 
   session_.reset();
@@ -662,6 +765,7 @@ IconBridge::Data::~Data() {
   motion_update_sub_.reset();
   joint_motion_update_sub_.reset();
   change_target_mode_srv_.reset();
+  controller_state_pub_.reset();
 }
 }  // namespace flowstate_ros_bridge
 
