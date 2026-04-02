@@ -49,7 +49,6 @@ target_link_libraries(icon_bridge
   agent_bridge_proto
   flowstate_ros_bridge::flowstate_ros_builtin_bridges
   rclcpp::rclcpp
-  rclcpp_components
   ${aic_control_interfaces_TARGETS}
 )
 target_compile_features(icon_bridge PUBLIC cxx_std_17)
@@ -59,7 +58,7 @@ pluginlib_export_plugin_description_file(flowstate_ros_bridge plugins.xml)
 
 #===============================================================================
 
-set(SERVICE_NAME "aic_flowstate_ros_bridge")
+set(SERVICE_NAME "flowstate_ros_bridge")
 
 intrinsic_sdk_generate_service_manifest(
   SERVICE_NAME ${SERVICE_NAME}
@@ -75,9 +74,8 @@ target_include_directories(${SERVICE_NAME}_main PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 target_link_libraries(${SERVICE_NAME}_main
-  ${SERVICE_NAME}_component
+  flowstate_ros_bridge::flowstate_ros_bridge_component
   ${SERVICE_NAME}_protos
-  rclcpp_components::component
 )
 
 # Generate the manifest and default config binarypb files
