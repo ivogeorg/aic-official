@@ -115,8 +115,8 @@ class TestICONBridgeNode(Node):
         msg = JointMotionUpdate()
 
         msg.target_state.positions = joint_pos
-        msg.target_stiffness = [500, 400, 300, 600, 150, 150, 50]
-        msg.target_damping = [30, 30, 20, 20, 4, 4, 1.5]
+        msg.target_stiffness = [100, 100, 100, 100, 150, 150]
+        msg.target_damping = [30, 30, 20, 20, 4, 4]
         msg.trajectory_generation_mode.mode = TrajectoryGenerationMode.MODE_POSITION
 
         return msg
@@ -226,10 +226,10 @@ def main(args=None):
         # Send service request to switch to joint target mode
         node.send_change_target_mode_req(TargetMode.MODE_JOINT)
 
-        node.send_joint_target([0.0, -0.785408, 0.0, -1.57, 0.0, 1.57, 0.0])
+        node.send_joint_target([0.0, -0.785408, 0.0, -1.57, 0.0, 1.57])
         time.sleep(3)
 
-        node.send_joint_target([0.0, -0.785408, 0.0, -2.18172, 0.0, 1.39621, 0.0])
+        node.send_joint_target([0.0, -0.785408, 0.0, -2.18172, 0.0, 1.39621])
         time.sleep(3)
 
         rclpy.spin(node)
