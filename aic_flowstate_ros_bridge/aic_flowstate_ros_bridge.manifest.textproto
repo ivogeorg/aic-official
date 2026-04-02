@@ -1,7 +1,7 @@
 metadata {
   id {
     package: "ai.intrinsic"
-    name: "flowstate_ros_bridge"
+    name: "aic_flowstate_ros_bridge"
   }
   vendor {
     display_name: "Intrinsic"
@@ -14,17 +14,17 @@ metadata {
 service_def {
   real_spec {
     image {
-      archive_filename: "flowstate_ros_bridge.tar"
+      archive_filename: "aic_flowstate_ros_bridge.tar"
     }
   }
   sim_spec {
     image {
-      archive_filename: "flowstate_ros_bridge.tar"
+      archive_filename: "aic_flowstate_ros_bridge.tar"
     }
   }
 }
 assets {
   default_configuration_filename: "default_config.binarypb",
   parameter_descriptor_filename: "parameter-descriptor-set.proto.bin",
-  image_filenames: ["flowstate_ros_bridge.tar"]
+  image_filenames: ["aic_flowstate_ros_bridge.tar"]
 }

@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>icon_bridge</name>
+  <name>aic_flowstate_ros_bridge</name>
   <version>0.0.1</version>
-  <description>Bridge between ROS and ICON</description>
+  <description>Flowstate ROS Bridge with a controller bridge plugin</description>
   <maintainer email="johntangz@google.com">johntangz</maintainer>
   <license>Apache-2.0</license>
 
@@ -13,7 +13,6 @@
   <depend>aic_control_interfaces</depend>
   <depend>flowstate_ros_bridge</depend>
   <depend>pluginlib</depend>
-  <depend>rclcpp_components</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(icon_bridge)
+project(aic_flowstate_ros_bridge)
 
 # Default to C++17
 if(NOT CMAKE_CXX_STANDARD)
@@ -58,7 +58,7 @@ pluginlib_export_plugin_description_file(flowstate_ros_bridge plugins.xml)
 
 #===============================================================================
 
-set(SERVICE_NAME "flowstate_ros_bridge")
+set(SERVICE_NAME "aic_flowstate_ros_bridge")
 
 intrinsic_sdk_generate_service_manifest(
   SERVICE_NAME ${SERVICE_NAME}

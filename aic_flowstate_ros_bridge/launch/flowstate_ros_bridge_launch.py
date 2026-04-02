@@ -53,7 +53,7 @@ def generate_launch_description():
                 "part_name", default_value="arm", description="Part to control"
             ),
             LifecycleNode(
-                package="flowstate_ros_bridge",
+                package="icon_bridge",
                 executable="flowstate_ros_bridge",
                 name="flowstate_ros_bridge",
                 namespace="",
@@ -67,6 +67,7 @@ def generate_launch_description():
                         ),
                         "bridge_plugins": [
                             "flowstate_ros_bridge::IconBridge",
+                            "flowstate_ros_bridge::WorldBridge",
                         ],
                         "server_address": LaunchConfiguration("server_address"),
                         "instance": LaunchConfiguration("instance"),
