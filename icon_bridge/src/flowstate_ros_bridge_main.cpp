@@ -13,11 +13,10 @@
 // limitations under the License.
 
 #include <fstream>
-#include <memory>
 
 #include "absl/log/log.h"
-#include "aic_flowstate_ros_bridge.pb.h"
 #include "class_loader/class_loader.hpp"
+#include "flowstate_ros_bridge.pb.h"
 #include "intrinsic/resources/proto/runtime_context.pb.h"
 #include "rclcpp/experimental/executors/events_executor/events_executor.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -93,10 +92,26 @@ int main(int argc, char* argv[]) {
   rclcpp::Parameter bridge_plugins_param("bridge_plugins", plugin_list);
   params.push_back(std::move(bridge_plugins_param));
 
-  // const auto& icon_bridge_config = ros_config.icon_bridge_config();
-  // params.emplace_back("server_address", icon_bridge_config.server_address());
-  // params.emplace_back("instance", icon_bridge_config.instance());
-  // params.emplace_back("part_name", icon_bridge_config.part_name());
+  const auto& s = ros_config.sensors();
+  params.emplace_back("enable_robot_joint_state_topic",
+                      s.enable_robot_joint_state_topic());
+  params.emplace_back("enable_force_torque_topic",
+                      s.enable_force_torque_topic());
+  params.emplace_back("robot_joint_state_topic", s.robot_joint_state_topic());
+  params.emplace_back("force_torque_topic", s.force_torque_topic());
+  params.emplace_back("force_torque_sensor_frame_id",
+                      s.force_torque_sensor_frame_id());
+  params.emplace_back("robot_controller_instance",
+                      s.robot_controller_instance());
+  params.emplace_back("throttle_robot_state_topic",
+                      s.throttle_robot_state_topic());
+
+  const auto& icon_bridge_config = ros_config.icon_bridge_config();
+  params.emplace_back("server_address", icon_bridge_config.server_address());
+  params.emplace_back("instance", icon_bridge_config.instance());
+  params.emplace_back("part_name", icon_bridge_config.part_name());
+
+  options.parameter_overrides(params);
 
   options.parameter_overrides(params);
 
