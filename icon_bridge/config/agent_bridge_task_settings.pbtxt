@@ -63,12 +63,15 @@ stiffness_smoothing_constant: 0.1
 damping_smoothing_constant: 0.1
 mass_smoothing_constant: 0.1
 
+# Note: for a robot with DOF < 7, the nullspace torque is not computed and hence
+# the parameers below are not used.
+#
 # For a non model-based impedance controller, the nullspace regularization
 # DOES interfere with endeffector motion. Thus, the nullspace_target_configuration
 # should be close to where the robot is manipulating to minimize this effect.
-nullspace_stiffness { joints: [50, 40, 30, 60, 15, 15, 5] }
-nullspace_damping { joints: [10, 10, 7, 27, 1.2, 1.2, 1.5] }
-nullspace_target_configuration { joints: [0., 0., 0., -1.5708, 0.0, 1.5708, 0.0] }
+nullspace_stiffness { joints: [50, 40, 30, 15, 15, 5] }
+nullspace_damping { joints: [10, 10, 7, 1.2, 1.2, 1.5] }
+nullspace_target_configuration { joints: [0.0, 0.0, 0.0, 0.0, 1.57, 0.0] }
 
 activation_percentage: -1
 
