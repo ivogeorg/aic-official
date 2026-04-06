@@ -106,10 +106,16 @@ int main(int argc, char* argv[]) {
   params.emplace_back("throttle_robot_state_topic",
                       s.throttle_robot_state_topic());
 
-  const auto& icon_bridge_config = ros_config.icon_bridge_config();
-  params.emplace_back("server_address", icon_bridge_config.server_address());
-  params.emplace_back("instance", icon_bridge_config.instance());
-  params.emplace_back("part_name", icon_bridge_config.part_name());
+  const auto& robot_control_bridge_config =
+      ros_config.robot_control_bridge_config();
+  params.emplace_back("server_address",
+                      robot_control_bridge_config.server_address());
+  params.emplace_back("instance", robot_control_bridge_config.instance());
+  params.emplace_back("part_name", robot_control_bridge_config.part_name());
+  params.emplace_back("task_settings_file",
+                      robot_control_bridge_config.task_settings_file());
+  params.emplace_back("joint_task_settings_file",
+                      robot_control_bridge_config.joint_task_settings_file());
 
   options.parameter_overrides(params);
 
@@ -124,8 +130,6 @@ int main(int argc, char* argv[]) {
 
   // Create and spin the FlowstateROSBridge node
   // Adapted from rclcpp_components::node_main.cpp.in
-  // TODO: Find a cleaner way of implementing this, this is basically the
-  // generated file from rclcpp_components::node_main.cpp.in
   std::string library_name = "libflowstate_ros_bridge_component.so";
   std::string class_name =
       "rclcpp_components::NodeFactoryTemplate<flowstate_ros_bridge::"

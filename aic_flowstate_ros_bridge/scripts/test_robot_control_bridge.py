@@ -35,10 +35,10 @@ from aic_control_interfaces.srv import (
 from geometry_msgs.msg import Pose, Point, Quaternion, Wrench, Vector3, Twist
 
 
-class TestICONBridgeNode(Node):
+class TestRobotControlBridgeNode(Node):
     def __init__(self):
         super().__init__("test_impedance_node")
-        self.get_logger().info("TestICONBridgeNode started")
+        self.get_logger().info("TestRobotControlBridgeNode started")
 
         # Declare parameters.
         self.controller_namespace = self.declare_parameter(
@@ -176,7 +176,7 @@ class TestICONBridgeNode(Node):
 def main(args=None):
     rclpy.init(args=args)
 
-    node = TestICONBridgeNode()
+    node = TestRobotControlBridgeNode()
 
     try:
         # Send service request to switch to Cartesian target mode

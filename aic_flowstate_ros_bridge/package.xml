@@ -9,9 +9,10 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>rclcpp</depend>
   <depend>aic_control_interfaces</depend>
+  <depend>ament_index_cpp</depend>
   <depend>flowstate_ros_bridge</depend>
+  <depend>rclcpp</depend>
   <depend>pluginlib</depend>
 
   <test_depend>ament_lint_auto</test_depend>

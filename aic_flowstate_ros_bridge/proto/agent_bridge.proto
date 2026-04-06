@@ -423,7 +423,7 @@ message JointTaskSettings {
 
   // [Optional] If provided, these limits are used in place of those obtained
   // from the part config. This allows users to customize the behavior of the
-  // action from call to call without needing to restart ICON with a new config.
+  // action from call to call without needing to restart the ICON service with a new config.
   //
   // Any new limits set within this proto must be within the application limits
   // specified by the part config. Thus, this field is only useful in reducing

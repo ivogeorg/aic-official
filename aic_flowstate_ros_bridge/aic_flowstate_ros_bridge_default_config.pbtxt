@@ -13,7 +13,7 @@
   bridge_plugins: [
     "flowstate_ros_bridge::WorldBridge",
     "flowstate_ros_bridge::ExecutiveBridge"
-    "flowstate_ros_bridge::IconBridge"
+    "flowstate_ros_bridge::RobotControlBridge"
   ],
   executive_deadline_seconds: 5
   executive_update_rate_millis: 1000
@@ -26,9 +26,11 @@
     robot_controller_instance: "robot_controller"
     throttle_robot_state_topic: false
   },
-  icon_bridge_config: {
+  robot_control_bridge_config: {
     server_address: "istio-ingressgateway.app-ingress.svc.cluster.local:80"
-    instance: "robot"
+    instance: "robot_controller"
     part_name: "arm"
+    task_settings_file: "config/default_task_settings.pbtxt"
+    joint_task_settings_file: "config/default_joint_task_settings.pbtxt"
   },
 }

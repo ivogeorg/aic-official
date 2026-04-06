@@ -42,18 +42,18 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "server_address",
                 default_value="localhost:17080",
-                description="Address of the ICON Application Layer Servers",
+                description="Address of the robot controller application layer server",
             ),
             DeclareLaunchArgument(
                 "instance",
                 default_value="robot_controller",
-                description="Name of the ICON service/resource instance",
+                description="Name of the robot controller service/resource instance",
             ),
             DeclareLaunchArgument(
                 "part_name", default_value="arm", description="Part to control"
             ),
             LifecycleNode(
-                package="icon_bridge",
+                package="flowstate_ros_bridge",
                 executable="flowstate_ros_bridge",
                 name="flowstate_ros_bridge",
                 namespace="",
@@ -66,21 +66,20 @@ def generate_launch_description():
                             "flowstate_zenoh_router_address"
                         ),
                         "bridge_plugins": [
-                            "flowstate_ros_bridge::IconBridge",
-                            "flowstate_ros_bridge::WorldBridge",
+                            # "flowstate_ros_bridge::ExecutiveBridge",
+                            # "flowstate_ros_bridge::WorldBridge",
+                            "flowstate_ros_bridge::RobotControlBridge",
                         ],
                         "server_address": LaunchConfiguration("server_address"),
                         "instance": LaunchConfiguration("instance"),
                         "part_name": LaunchConfiguration("part_name"),
-                        "agent_bridge_task_settings_file": os.path.join(
-                            get_package_share_directory("icon_bridge"),
+                        "task_settings_file": os.path.join(
                             "config",
-                            "agent_bridge_task_settings.pbtxt",
+                            "default_task_settings.pbtxt",
                         ),
-                        "agent_bridge_joint_task_settings_file": os.path.join(
-                            get_package_share_directory("icon_bridge"),
+                        "joint_task_settings_file": os.path.join(
                             "config",
-                            "agent_bridge_joint_task_settings.pbtxt",
+                            "default_joint_task_settings.pbtxt",
                         ),
                     }
                 ],

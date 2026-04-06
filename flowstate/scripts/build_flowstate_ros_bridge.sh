@@ -9,7 +9,7 @@ ROS_DISTRO="jazzy"
 show_help() {
   echo "Usage: $(basename "$0") [OPTIONS]"
   echo ""
-  echo "Build and bundle the AIC model container image for Flowstate."
+  echo "Build and bundle the aic_flowstate_ros_bridge container image for Flowstate."
   echo ""
   echo "Options:"
   echo "  -h, --help           Show this help message and exit"

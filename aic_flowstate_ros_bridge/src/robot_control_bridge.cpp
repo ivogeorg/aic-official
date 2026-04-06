@@ -15,12 +15,14 @@
  *
  */
 
-#include "icon_bridge.hpp"
+#include "robot_control_bridge.hpp"
 
+#include <filesystem>
 #include <string>
 
 #include "absl/log/log.h"
 #include "absl/time/time.h"
+#include "ament_index_cpp/get_package_share_directory.hpp"
 #include "intrinsic/icon/cc_client/operational_status.h"
 #include "intrinsic/icon/common/builtins.h"
 #include "intrinsic/util/grpc/channel.h"
@@ -37,12 +39,13 @@ constexpr const char* kServerAddressParamName = "server_address";
 constexpr const char* kInstanceParamName = "instance";
 constexpr const char* kPartNameParamName = "part_name";
 constexpr const char* kAgentBridgeTaskSettingsFileParamName =
-    "agent_bridge_task_settings_file";
+    "task_settings_file";
 constexpr const char* kAgentBridgeJointTaskSettingsFileParamName =
-    "agent_bridge_joint_task_settings_file";
+    "joint_task_settings_file";
 
 ///=============================================================================
-void IconBridge::declare_ros_parameters(ROSNodeInterfaces ros_node_interfaces) {
+void RobotControlBridge::declare_ros_parameters(
+    ROSNodeInterfaces ros_node_interfaces) {
   const auto& param_interface =
       ros_node_interfaces
           .get<rclcpp::node_interfaces::NodeParametersInterface>();
@@ -60,9 +63,10 @@ void IconBridge::declare_ros_parameters(ROSNodeInterfaces ros_node_interfaces) {
 }
 
 ///=============================================================================
-bool IconBridge::initialize(ROSNodeInterfaces ros_node_interfaces,
-                            std::shared_ptr<Executive> /*executive_client*/,
-                            std::shared_ptr<World> /*world_client*/) {
+bool RobotControlBridge::initialize(
+    ROSNodeInterfaces ros_node_interfaces,
+    std::shared_ptr<Executive> /*executive_client*/,
+    std::shared_ptr<World> /*world_client*/) {
   data_ = std::make_shared<Data>();
 
   data_->node_interfaces_ = std::move(ros_node_interfaces);
@@ -78,12 +82,33 @@ bool IconBridge::initialize(ROSNodeInterfaces ros_node_interfaces,
                              .get_value<std::string>();
   data_->part_name_ = param_interface->get_parameter(kPartNameParamName)
                           .get_value<std::string>();
-  std::string agent_bridge_task_settings_file =
+  std::filesystem::path task_settings_file =
       param_interface->get_parameter(kAgentBridgeTaskSettingsFileParamName)
           .get_value<std::string>();
-  std::string agent_bridge_joint_task_settings_file =
+  std::filesystem::path joint_task_settings_file =
       param_interface->get_parameter(kAgentBridgeJointTaskSettingsFileParamName)
           .get_value<std::string>();
+
+  // Prepend share directory of current package if task_settings filepath is
+  // relative
+  std::filesystem::path share_dir =
+      ament_index_cpp::get_package_share_directory("aic_flowstate_ros_bridge");
+  if (task_settings_file.is_relative()) {
+    LOG(INFO) << "'task_settings_file' parameter has value of '"
+              << task_settings_file.string()
+              << "' which is a relative path. "
+                 "Resolving it relative to shared directory of "
+                 "package 'aic_flowstate_ros_bridge'";
+    task_settings_file = share_dir / task_settings_file;
+  }
+  if (joint_task_settings_file.is_relative()) {
+    LOG(INFO) << "'joint_task_settings_file' parameter has value of '"
+              << joint_task_settings_file.string()
+              << "' which is a relative path. "
+                 "Resolving it relative to shared directory of "
+                 "package 'aic_flowstate_ros_bridge'";
+    joint_task_settings_file = share_dir / joint_task_settings_file;
+  }
 
   LOG(INFO) << "Connecting to ICON server: " << server_address
             << ", instance: " << instance << ", part: " << data_->part_name_;
@@ -134,8 +159,6 @@ bool IconBridge::initialize(ROSNodeInterfaces ros_node_interfaces,
         "Failed to retrieve part status from ICON Server.");
   }
   data_->num_joints_ = part_status.value().joint_states_size();
-  // todo(johntgz) remove
-  //  auto base_t_tip_sensed = part_status.value().base_t_tip_sensed();
 
   // Start ICON Session
   auto session_or =
@@ -148,26 +171,37 @@ bool IconBridge::initialize(ROSNodeInterfaces ros_node_interfaces,
   data_->session_ = std::move(session_or.value());
 
   // Load TaskSettings from file
-  if (!agent_bridge_task_settings_file.empty()) {
+  if (!task_settings_file.empty()) {
     auto status = intrinsic::GetTextProto(
-        agent_bridge_task_settings_file,
+        task_settings_file.string(),
         *(data_->agent_bridge_fixed_params_.mutable_task_settings()));
     if (!status.ok()) {
-      LOG(ERROR) << "Failed to start load task settings for AgentBridge: "
-                 << status.message().data();
+      LOG(ERROR) << "Failed to start load task settings for AgentBridge from "
+                    "filepath '"
+                 << task_settings_file << "': " << status.message().data();
       throw std::runtime_error("Failed to load task settings for AgentBridge");
     }
+  } else {
+    LOG(ERROR) << "'task_settings_file' parameter is empty. Provide a valid "
+                  "filepath for loading default task_settings.";
+    throw std::runtime_error("'task_settings_file' parameter is empty.");
   }
-  if (!agent_bridge_joint_task_settings_file.empty()) {
+  if (!joint_task_settings_file.empty()) {
     auto status = intrinsic::GetTextProto(
-        agent_bridge_joint_task_settings_file,
+        joint_task_settings_file.string(),
         *(data_->agent_bridge_joint_fixed_params_.mutable_task_settings()));
     if (!status.ok()) {
-      LOG(ERROR) << "Failed to start load task settings for AgentBridgeJoint: "
-                 << status.message().data();
+      LOG(ERROR) << "Failed to start load task settings for AgentBridgeJoint "
+                    "from filepath '"
+                 << task_settings_file << "': " << status.message().data();
       throw std::runtime_error(
           "Failed to load task settings for AgentBridgeJoint");
     }
+  } else {
+    LOG(ERROR)
+        << "'joint_task_settings_file' parameter is empty. Provide a valid "
+           "filepath for loading default task_settings.";
+    throw std::runtime_error("'joint_task_settings_file' parameter is empty.");
   }
 
   // Initialize Motion Update defaults
@@ -397,13 +431,13 @@ bool IconBridge::initialize(ROSNodeInterfaces ros_node_interfaces,
           topics_interface, "aic_controller/controller_state",
           rclcpp::SystemDefaultsQoS());
 
-  LOG(INFO) << "Initialized ICONBridge";
+  LOG(INFO) << "Initialized RobotControlBridge";
 
   return true;
 }
 
 // ///=============================================================================
-// void IconBridge::PollActionStateCallback() {
+// void RobotControlBridge::PollActionStateCallback() {
 //   if (!data_->session_) {
 //     LOG(ERROR) << "No session established for ICON Server, unable to poll "
 //                   "action states.";
@@ -494,7 +528,7 @@ bool IconBridge::initialize(ROSNodeInterfaces ros_node_interfaces,
 // }
 
 ///=============================================================================
-void IconBridge::ChangeTargetModeCallback(
+void RobotControlBridge::ChangeTargetModeCallback(
     const std::shared_ptr<
         aic_control_interfaces::srv::ChangeTargetMode::Request>
         request,
@@ -571,7 +605,7 @@ void IconBridge::ChangeTargetModeCallback(
 }
 
 ///=============================================================================
-void IconBridge::MotionUpdateCallback(
+void RobotControlBridge::MotionUpdateCallback(
     const aic_control_interfaces::msg::MotionUpdate::SharedPtr msg) {
   if (!data_->agent_bridge_writer_) {
     LOG(ERROR) << "MotionUpdate stream writer not initialized.";
@@ -669,7 +703,7 @@ void IconBridge::MotionUpdateCallback(
 }
 
 ///=============================================================================
-void IconBridge::JointMotionUpdateCallback(
+void RobotControlBridge::JointMotionUpdateCallback(
     const aic_control_interfaces::msg::JointMotionUpdate::SharedPtr msg) {
   if (!data_->agent_bridge_joint_writer_) {
     LOG(ERROR) << "JointMotionUpdate stream writer not initialized.";
@@ -749,7 +783,7 @@ void IconBridge::JointMotionUpdateCallback(
 }
 
 ///=============================================================================
-IconBridge::Data::~Data() {
+RobotControlBridge::Data::~Data() {
   auto status = session_->StopAllActions();
   if (!status.ok()) {
     LOG(ERROR) << "Failed to stop all actions on ICON Server: "
@@ -771,5 +805,5 @@ IconBridge::Data::~Data() {
 
 #include <pluginlib/class_list_macros.hpp>
 
-PLUGINLIB_EXPORT_CLASS(flowstate_ros_bridge::IconBridge,
+PLUGINLIB_EXPORT_CLASS(flowstate_ros_bridge::RobotControlBridge,
                        flowstate_ros_bridge::BridgeInterface)

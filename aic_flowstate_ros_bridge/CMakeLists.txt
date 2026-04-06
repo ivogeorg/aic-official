@@ -14,6 +14,7 @@ find_package(ament_cmake REQUIRED)
 set(dep_pkgs
   absl
   aic_control_interfaces
+  ament_index_cpp
   flowstate_ros_bridge
   pluginlib
   rclcpp
@@ -34,26 +35,28 @@ intrinsic_sdk_protobuf_generate(
   DESCRIPTOR_SET_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/agent_bridge.desc"
 )
 
-add_library(icon_bridge SHARED
-  src/icon_bridge.cpp
+add_library(robot_control_bridge SHARED
+  src/robot_control_bridge.cpp
 )
-target_include_directories(icon_bridge
+target_include_directories(robot_control_bridge
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     ${pluginlib_INCLUDE_DIRS}
 )
-target_link_libraries(icon_bridge
+target_link_libraries(robot_control_bridge
   absl::log
   absl::time
   agent_bridge_proto
+  ament_index_cpp::ament_index_cpp
   flowstate_ros_bridge::flowstate_ros_builtin_bridges
+  pluginlib::pluginlib
   rclcpp::rclcpp
   ${aic_control_interfaces_TARGETS}
 )
-target_compile_features(icon_bridge PUBLIC cxx_std_17)
+target_compile_features(robot_control_bridge PUBLIC cxx_std_17)
 
-ament_export_libraries(icon_bridge)
+ament_export_libraries(robot_control_bridge)
 pluginlib_export_plugin_description_file(flowstate_ros_bridge plugins.xml)
 
 #===============================================================================
@@ -87,7 +90,7 @@ add_dependencies(${SERVICE_NAME}_main
 #===============================================================================
 
 install(TARGETS
-  icon_bridge
+  robot_control_bridge
   agent_bridge_proto
   ${SERVICE_NAME}_main
   DESTINATION lib/${PROJECT_NAME}
@@ -106,7 +109,7 @@ install(DIRECTORY config launch proto
 )
 
 install(PROGRAMS
-  scripts/test_icon_bridge.py
+  scripts/test_robot_control_bridge.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

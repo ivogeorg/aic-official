@@ -15,19 +15,19 @@
  *
  */
 
-#ifndef BRIDGES_ICON_BRIDGE_HPP_
-#define BRIDGES_ICON_BRIDGE_HPP_
+#ifndef BRIDGES_ROBOT_CONTROL_BRIDGE_HPP_
+#define BRIDGES_ROBOT_CONTROL_BRIDGE_HPP_
 
 #include <memory>
 
 #include "flowstate_ros_bridge/bridge_interface.hpp"
-#include "icon_bridge/agent_bridge_info.h"
-#include "icon_bridge/agent_bridge_joint_info.h"
 #include "intrinsic/icon/cc_client/client.h"
 #include "intrinsic/icon/cc_client/session.h"
 #include "intrinsic/icon/cc_client/stream.h"
 #include "proto/agent_bridge.pb.h"
 #include "rclcpp/rclcpp.hpp"
+#include "robot_control_bridge/agent_bridge_info.h"
+#include "robot_control_bridge/agent_bridge_joint_info.h"
 
 // Interfaces
 #include "aic_control_interfaces/msg/controller_state.hpp"
@@ -51,7 +51,7 @@ const intrinsic::icon::ActionInstanceId kAgentBridgeId(1);
 const intrinsic::icon::ActionInstanceId kAgentBridgeJointId(2);
 
 ///=============================================================================
-class IconBridge : public BridgeInterface {
+class RobotControlBridge : public BridgeInterface {
  public:
   /// Documentation inherited.
   void declare_ros_parameters(ROSNodeInterfaces ros_node_interfaces) final;
@@ -114,4 +114,4 @@ class IconBridge : public BridgeInterface {
 };
 }  // namespace flowstate_ros_bridge.
 
-#endif  // BRIDGES_ICON_BRIDGE_HPP_
+#endif  // BRIDGES_ROBOT_CONTROL_BRIDGE_HPP_

@@ -1,10 +1,10 @@
-# icon_bridge
+# robot_control_bridge
 
-A Flowstate-ROS bridge plugin that bridges the AgentBridge and AgentBridgeJoint actions on ICON to ROS.
+A Flowstate-ROS bridge plugin that bridges the real-time controller service to ROS.
 
 ## Quickstart (Sideload as Flowstate Service)
 
-### Build the icon_bridge bundle (Docker)
+### Build the robot_control_bridge bundle (Docker)
 
 Set up the Docker engine:
 
@@ -17,7 +17,7 @@ Then, create the service bundle using the `build_service_bundle.sh` script.
 
 ```bash
 cd ~/ws_aic
-./src/sdk-ros/flowstate_ros_bridge/scripts/build_service_bundle.sh --ros_distro kilted
+./src/aic/flowstate/scripts/build_flowstate_ros_bridge.sh --ros_distro kilted
 ```
 
 ### Sideload the flowstate_ros_bridge service into Flowstate
