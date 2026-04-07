@@ -84,14 +84,13 @@ message MotionUpdate {
 // meant only to be used for logging and we want to keep it flexible for
 // diagnosising problems.
 message LastControlUpdate {
-  // xyz_xyzw
+  //Poses have the fields [x, y, z, q_x, q_y, q_z, q_w]
+  //Velocity have the fields [v_x, v_y, v_z, r_x, r_y, r_z]
   repeated double target_pose = 1;
   repeated double target_vel = 2;
-  // xyz_xyzw
   repeated double reference_pose = 3;
   repeated double reference_vel = 4;
   repeated double reference_acc = 5;
-  // xyz_xyzw
   repeated double sensed_pose = 6;
   repeated double sensed_vel = 7;
   repeated double sensed_acc = 8;
