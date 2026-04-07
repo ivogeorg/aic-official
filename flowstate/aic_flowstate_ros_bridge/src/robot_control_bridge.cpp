@@ -514,6 +514,13 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
     return;
   }
 
+  aic_control_interfaces::msg::ControllerState controller_state;
+  controller_state.header.stamp =
+      data_->node_interfaces_
+          .get<rclcpp::node_interfaces::NodeClockInterface>()
+          ->get_clock()
+          ->now();
+
   switch (stream_out_with_meta_proto.action_instance_id()) {
     case kAgentBridgeId.value(): {
       intrinsic_proto::icon::actions::proto::AgentBridgeStatus ab_status_proto;
@@ -523,20 +530,55 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
                         "AgentBridgeAction streaming output";
         return;
       }
-      LOG(INFO) << "Received message from AgentBridge action";
 
-      // Log all values from AgentBridgeStatus proto
-      LOG(INFO) << "seconds_since_last_command: "
-                << ab_status_proto.seconds_since_last_command();
+      const auto& last_update = ab_status_proto.last_control_update();
+      if (last_update.sensed_pose_size() == 7) {
+        controller_state.tcp_pose.position.x = last_update.sensed_pose(0);
+        controller_state.tcp_pose.position.y = last_update.sensed_pose(1);
+        controller_state.tcp_pose.position.z = last_update.sensed_pose(2);
+        controller_state.tcp_pose.orientation.x = last_update.sensed_pose(3);
+        controller_state.tcp_pose.orientation.y = last_update.sensed_pose(4);
+        controller_state.tcp_pose.orientation.z = last_update.sensed_pose(5);
+        controller_state.tcp_pose.orientation.w = last_update.sensed_pose(6);
+      }
+      if (last_update.sensed_vel_size() == 6) {
+        controller_state.tcp_velocity.linear.x = last_update.sensed_vel(0);
+        controller_state.tcp_velocity.linear.y = last_update.sensed_vel(1);
+        controller_state.tcp_velocity.linear.z = last_update.sensed_vel(2);
+        controller_state.tcp_velocity.angular.x = last_update.sensed_vel(3);
+        controller_state.tcp_velocity.angular.y = last_update.sensed_vel(4);
+        controller_state.tcp_velocity.angular.z = last_update.sensed_vel(5);
+      } else {
+        LOG(ERROR) << "last_update.sensed_vel_size() != 6";
+      }
+      if (last_update.reference_pose_size() == 7) {
+        controller_state.reference_tcp_pose.position.x =
+            last_update.reference_pose(0);
+        controller_state.reference_tcp_pose.position.y =
+            last_update.reference_pose(1);
+        controller_state.reference_tcp_pose.position.z =
+            last_update.reference_pose(2);
+        controller_state.reference_tcp_pose.orientation.x =
+            last_update.reference_pose(3);
+        controller_state.reference_tcp_pose.orientation.y =
+            last_update.reference_pose(4);
+        controller_state.reference_tcp_pose.orientation.z =
+            last_update.reference_pose(5);
+        controller_state.reference_tcp_pose.orientation.w =
+            last_update.reference_pose(6);
+      }
 
-      LOG(INFO) << "reference_scaling_factor_translation: "
-                << ab_status_proto.reference_scaling_factor_translation();
-      LOG(INFO) << "reference_scaling_factor_rotation: "
-                << ab_status_proto.reference_scaling_factor_rotation();
+      // todo(johntgz) determine if the units from the proto are the same as in
+      // controller_state
+      for (int i = 0; i < 6 && i < ab_status_proto.pose_error_integrated_size();
+           ++i) {
+        controller_state.tcp_error[i] =
+            ab_status_proto.pose_error_integrated(i);
+      }
 
-      LOG(INFO) << "limit_breached: " << ab_status_proto.limit_breached();
-      LOG(INFO) << "limit_breached_since_last_motion_update: "
-                << ab_status_proto.limit_breached_since_last_motion_update();
+      controller_state.target_mode.mode =
+          aic_control_interfaces::msg::TargetMode::MODE_CARTESIAN;
+
       break;
     }
     case kAgentBridgeJointId.value(): {
@@ -549,25 +591,32 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
         return;
       }
 
-      LOG(INFO) << "Received message from AgentBridgeJoint action";
+      const auto& reference_state = ab_joint_status_proto.reference_state();
+      for (double pos : reference_state.position()) {
+        controller_state.reference_joint_state.positions.push_back(pos);
+      }
+      for (double vel : reference_state.velocity()) {
+        controller_state.reference_joint_state.velocities.push_back(vel);
+      }
+      for (double acc : reference_state.acceleration()) {
+        controller_state.reference_joint_state.accelerations.push_back(acc);
+      }
+      const auto& joint_torque = ab_joint_status_proto.joint_torque();
+      for (double torque : joint_torque.joints()) {
+        controller_state.reference_joint_state.effort.push_back(torque);
+      }
 
-      LOG(INFO) << "seconds_since_last_command: "
-                << ab_joint_status_proto.seconds_since_last_command();
-
-      LOG(INFO) << "reference_scaling_factor: "
-                << ab_joint_status_proto.reference_scaling_factor();
-
-      LOG(INFO) << "limit_breached: " << ab_joint_status_proto.limit_breached();
-      LOG(INFO)
-          << "limit_breached_since_last_motion_update: "
-          << ab_joint_status_proto.limit_breached_since_last_motion_update();
+      controller_state.target_mode.mode =
+          aic_control_interfaces::msg::TargetMode::MODE_JOINT;
       break;
     }
     default:
       LOG(WARNING) << "Received streaming output for unknown action instance: "
                    << stream_out_with_meta_proto.action_instance_id();
-      break;
+      return;
   }
+
+  data_->controller_state_pub_->publish(controller_state);
 }
 
 ///=============================================================================
