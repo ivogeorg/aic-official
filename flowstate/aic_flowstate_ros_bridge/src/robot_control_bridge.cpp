@@ -505,6 +505,9 @@ RobotControlBridge::CreateActionOutputStreamSubscription(
 
 void RobotControlBridge::agentBridgeOutputStreamCallback(
     const intrinsic_proto::data_logger::LogItem& log_item) {
+  rclcpp::Clock clock;
+  const rclcpp::Time t_start = clock.now();
+
   const auto& payload = log_item.payload();
 
   intrinsic_proto::icon::StreamingOutputWithMetadata stream_out_with_meta_proto;
@@ -515,11 +518,7 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
   }
 
   aic_control_interfaces::msg::ControllerState controller_state;
-  controller_state.header.stamp =
-      data_->node_interfaces_
-          .get<rclcpp::node_interfaces::NodeClockInterface>()
-          ->get_clock()
-          ->now();
+  controller_state.header.stamp = clock.now();
 
   switch (stream_out_with_meta_proto.action_instance_id()) {
     case kAgentBridgeId.value(): {
@@ -615,6 +614,11 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
                    << stream_out_with_meta_proto.action_instance_id();
       return;
   }
+
+  // print a timing snapshot every 5000 messages
+  const rclcpp::Duration elapsed = clock.now() - t_start;
+  LOG_EVERY_N(INFO, 5000) << absl::StrFormat(
+      "controller_state translation time: %.3f ms", 1000.0 * elapsed.seconds());
 
   data_->controller_state_pub_->publish(controller_state);
 }
