@@ -197,20 +197,6 @@ def main(args=None):
         )
         time.sleep(3)
 
-        # node.send_cartesian_pose_target(
-        #     [-0.25, -0.1, 0.5],
-        #     [-0.2126311, 0.2126311, 0.6743797, 0.6743797],
-        #     "gripper/tcp",
-        # )
-        # time.sleep(3)
-
-        # node.send_cartesian_pose_target(
-        #     [0.286701, 0.0, 0.42188],
-        #     [0.923878, 0.382687, 0.0, 0.0],
-        #     "gripper/tcp",
-        # )
-        # time.sleep(3)
-
         # Send Cartesian twist targets in both "base_link" and "gripper/tcp" frames
         node.send_cartesian_twist_target(
             [0.05, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -226,11 +212,13 @@ def main(args=None):
         # Send service request to switch to joint target mode
         node.send_change_target_mode_req(TargetMode.MODE_JOINT)
 
-        node.send_joint_target([0.0, -0.785408, 0.0, -1.57, 0.0, 1.57])
-        time.sleep(3)
+        node.send_joint_target([0.5, -1.25, -1.5, -1.5, 1.0, 1.0])
+        time.sleep(5)
 
-        node.send_joint_target([0.0, -0.785408, 0.0, -2.18172, 0.0, 1.39621])
-        time.sleep(3)
+        node.send_joint_target(
+            [0.0, -1.354375, -1.6648696, -1.6931439, 1.5708, 1.4109242]
+        )
+        time.sleep(5)
 
         rclpy.spin(node)
 

@@ -20,11 +20,14 @@
 #include <filesystem>
 #include <string>
 
+#include "absl/flags/flag.h"
 #include "absl/log/log.h"
+#include "absl/strings/str_format.h"
 #include "absl/time/time.h"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "intrinsic/icon/cc_client/operational_status.h"
 #include "intrinsic/icon/common/builtins.h"
+#include "intrinsic/platform/pubsub/zenoh_util/zenoh_config.h"
 #include "intrinsic/util/grpc/channel.h"
 #include "intrinsic/util/grpc/connection_params.h"
 #include "intrinsic/util/proto/get_text_proto.h"
@@ -42,6 +45,8 @@ constexpr const char* kAgentBridgeTaskSettingsFileParamName =
     "task_settings_file";
 constexpr const char* kAgentBridgeJointTaskSettingsFileParamName =
     "joint_task_settings_file";
+constexpr const char* kFlowstateZenohRouterParamName =
+    "flowstate_zenoh_router_address";
 
 ///=============================================================================
 void RobotControlBridge::declare_ros_parameters(
@@ -384,6 +389,50 @@ bool RobotControlBridge::initialize(
   data_->target_mode_value_ =
       aic_control_interfaces::msg::TargetMode::MODE_CARTESIAN;
 
+  // Create zenoh subscriptions to the action output streams from the robot
+  // controller server
+  absl::SetFlag(&FLAGS_zenoh_router,
+                param_interface->get_parameter(kFlowstateZenohRouterParamName)
+                    .get_value<std::string>());
+  data_->pubsub_ = std::make_shared<intrinsic::PubSub>(
+      data_->node_interfaces_.get<rclcpp::node_interfaces::NodeBaseInterface>()
+          ->get_name());
+
+  auto agent_bridge_output_stream_sub = CreateActionOutputStreamSubscription(
+      [this](const intrinsic_proto::data_logger::LogItem& msg) {
+        this->agentBridgeOutputStreamCallback(msg);
+      },
+      instance, kAgentBridgeId);
+  if (!agent_bridge_output_stream_sub.ok()) {
+    LOG(ERROR) << "Unable to create subscription to action output stream for "
+                  "AgentBridge: "
+               << agent_bridge_output_stream_sub.status();
+    throw std::runtime_error(
+        "Unable to create subscription to action output stream for "
+        "AgentBridge");
+  }
+  LOG(INFO) << "Subscribed to AgentBridge output stream topic";
+  data_->agent_bridge_output_stream_sub_ =
+      std::move(*agent_bridge_output_stream_sub);
+
+  auto agent_bridge_joint_output_stream_sub =
+      CreateActionOutputStreamSubscription(
+          [this](const intrinsic_proto::data_logger::LogItem& msg) {
+            this->agentBridgeOutputStreamCallback(msg);
+          },
+          instance, kAgentBridgeJointId);
+  if (!agent_bridge_joint_output_stream_sub.ok()) {
+    LOG(ERROR) << "Unable to create subscription to action output stream for "
+                  "AgentBridgeJoint: "
+               << agent_bridge_joint_output_stream_sub.status();
+    throw std::runtime_error(
+        "Unable to create subscription to action output stream for "
+        "AgentBridgeJoint");
+  }
+  LOG(INFO) << "Subscribed to AgentBridgeJoint output stream topic";
+  data_->agent_bridge_joint_output_stream_sub_ =
+      std::move(*agent_bridge_joint_output_stream_sub);
+
   std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface>
       topics_interface =
           data_->node_interfaces_
@@ -400,7 +449,6 @@ bool RobotControlBridge::initialize(
               const aic_control_interfaces::msg::MotionUpdate::SharedPtr msg) {
             this->MotionUpdateCallback(msg);
           });
-
   data_->joint_motion_update_sub_ = rclcpp::create_subscription<
       aic_control_interfaces::msg::JointMotionUpdate>(
       topics_interface, "aic_controller/joint_commands", reliable_qos,
@@ -409,6 +457,7 @@ bool RobotControlBridge::initialize(
         this->JointMotionUpdateCallback(msg);
       });
 
+  // ROS Service server for ChangeTargetMode
   data_->change_target_mode_srv_ =
       rclcpp::create_service<aic_control_interfaces::srv::ChangeTargetMode>(
           data_->node_interfaces_
@@ -436,96 +485,90 @@ bool RobotControlBridge::initialize(
   return true;
 }
 
-// ///=============================================================================
-// void RobotControlBridge::PollActionStateCallback() {
-//   if (!data_->session_) {
-//     LOG(ERROR) << "No session established for ICON Server, unable to poll "
-//                   "action states.";
-//     return;
-//   }
+absl::StatusOr<std::shared_ptr<intrinsic::Subscription>>
+RobotControlBridge::CreateActionOutputStreamSubscription(
+    intrinsic::SubscriptionOkCallback<intrinsic_proto::data_logger::LogItem>
+        callback,
+    const std::string& instance,
+    const intrinsic::icon::ActionInstanceId action_instance_id) {
+  const std::string action_output_stream_topic_name =
+      absl::StrFormat("/icon/%s/output_streams/action_%s", instance,
+                      std::to_string(action_instance_id.value()));
 
-//   aic_control_interfaces::msg::ControllerState controller_state;
+  auto sub = data_->pubsub_->CreateSubscription(
+      action_output_stream_topic_name, intrinsic::TopicConfig(), callback);
+  if (!sub.ok()) {
+    return sub.status();
+  }
+  return std::make_shared<intrinsic::Subscription>(std::move(*sub));
+}
 
-//   // controller_state.header.stamp = get_node()->now();
+void RobotControlBridge::agentBridgeOutputStreamCallback(
+    const intrinsic_proto::data_logger::LogItem& log_item) {
+  const auto& payload = log_item.payload();
 
-//   // controller_state.reference_tcp_pose =
-//   // tf2::toMsg(last_tool_reference_.pose);
+  intrinsic_proto::icon::StreamingOutputWithMetadata stream_out_with_meta_proto;
+  if (!payload.any().UnpackTo(&stream_out_with_meta_proto)) {
+    LOG(WARNING) << "Failed to unpack StreamingOutputWithMetadata from "
+                    "action output stream";
+    return;
+  }
 
-//   // std::copy(last_tool_pose_error_.data(),
-//   //           last_tool_pose_error_.data() + last_tool_pose_error_.size(),
-//   //           controller_state.tcp_error.begin());
+  switch (stream_out_with_meta_proto.action_instance_id()) {
+    case kAgentBridgeId.value(): {
+      intrinsic_proto::icon::actions::proto::AgentBridgeStatus ab_status_proto;
+      if (!stream_out_with_meta_proto.output().payload().UnpackTo(
+              &ab_status_proto)) {
+        LOG(WARNING) << "Failed to unpack AgentBridgeStatus from "
+                        "AgentBridgeAction streaming output";
+        return;
+      }
+      LOG(INFO) << "Received message from AgentBridge action";
 
-//   // if (last_commanded_state_.has_value()) {
-//   //   controller_state.reference_joint_state =
-//   last_commanded_state_.value();
-//   // }
+      // Log all values from AgentBridgeStatus proto
+      LOG(INFO) << "seconds_since_last_command: "
+                << ab_status_proto.seconds_since_last_command();
 
-//   controller_state.target_mode.mode = data_->target_mode_value_;
+      LOG(INFO) << "reference_scaling_factor_translation: "
+                << ab_status_proto.reference_scaling_factor_translation();
+      LOG(INFO) << "reference_scaling_factor_rotation: "
+                << ab_status_proto.reference_scaling_factor_rotation();
 
-//   // controller_state.fts_tare_offset.header.frame_id = "ati/tool_link";
-//   // utils::eigen_to_wrench_msg(tare_offset_at_tip_,
-//   //                           controller_state.fts_tare_offset.wrench);
+      LOG(INFO) << "limit_breached: " << ab_status_proto.limit_breached();
+      LOG(INFO) << "limit_breached_since_last_motion_update: "
+                << ab_status_proto.limit_breached_since_last_motion_update();
+      break;
+    }
+    case kAgentBridgeJointId.value(): {
+      intrinsic_proto::icon::actions::proto::AgentBridgeJointStatus
+          ab_joint_status_proto;
+      if (!stream_out_with_meta_proto.output().payload().UnpackTo(
+              &ab_joint_status_proto)) {
+        LOG(WARNING) << "Failed to unpack AgentBridgeJointStatus from "
+                        "AgentBridgeJointAction streaming output";
+        return;
+      }
 
-//   absl::Time now = absl::Now();
-//   absl::Time poll_deadline = now + absl::Seconds(1.0);
+      LOG(INFO) << "Received message from AgentBridgeJoint action";
 
-//   if (data_->target_mode_value_ ==
-//       aic_control_interfaces::msg::TargetMode::MODE_CARTESIAN) {
-//     if (data_->agent_bridge_action_.has_value()) {
-//       absl::StatusOr<intrinsic_proto::icon::StreamingOutput> streaming_output
-//       =
-//           data_->session_->GetLatestOutput(kAgentBridgeId, poll_deadline);
+      LOG(INFO) << "seconds_since_last_command: "
+                << ab_joint_status_proto.seconds_since_last_command();
 
-//       if (!streaming_output.ok()) {
-//         LOG(WARNING)
-//             << "Failed to get streaming output from AgentBridge Action: "
-//             << streaming_output.status().message().data();
-//         return;
-//       }
+      LOG(INFO) << "reference_scaling_factor: "
+                << ab_joint_status_proto.reference_scaling_factor();
 
-//       intrinsic::icon::AgentBridgeInfo::StreamingOutput
-//       streaming_output_proto; if
-//       (!streaming_output.value().payload().UnpackTo(
-//               &streaming_output_proto)) {
-//         LOG(WARNING)
-//             << "Failed to get unpack streaming output from AgentBridge
-//             Action";
-//         return;
-//       }
-//       // todo(johntgz) assign controller_state message
-//     }
-//   } else if (data_->target_mode_value_ ==
-//              aic_control_interfaces::msg::TargetMode::MODE_JOINT) {
-//     if (data_->agent_bridge_joint_action_.has_value()) {
-//       absl::StatusOr<intrinsic_proto::icon::StreamingOutput> streaming_output
-//       =
-//           data_->session_->GetLatestOutput(kAgentBridgeJointId,
-//           poll_deadline);
-
-//       if (!streaming_output.ok()) {
-//         LOG(WARNING)
-//             << "Failed to get streaming output from AgentBridgeJoint Action:
-//             "
-//             << streaming_output.status().message().data();
-//         return;
-//       }
-
-//       intrinsic::icon::AgentBridgeJointInfo::StreamingOutput
-//           streaming_output_proto;
-//       if (!streaming_output.value().payload().UnpackTo(
-//               &streaming_output_proto)) {
-//         LOG(WARNING)
-//             << "Failed to get unpack streaming output from AgentBridge
-//             Action";
-//         return;
-//       }
-
-//       // todo(johntgz) assign controller_state message
-//     }
-//   }
-
-//   data_->controller_state_pub_->publish(controller_state);
-// }
+      LOG(INFO) << "limit_breached: " << ab_joint_status_proto.limit_breached();
+      LOG(INFO)
+          << "limit_breached_since_last_motion_update: "
+          << ab_joint_status_proto.limit_breached_since_last_motion_update();
+      break;
+    }
+    default:
+      LOG(WARNING) << "Received streaming output for unknown action instance: "
+                   << stream_out_with_meta_proto.action_instance_id();
+      break;
+  }
+}
 
 ///=============================================================================
 void RobotControlBridge::ChangeTargetModeCallback(
@@ -795,6 +838,10 @@ RobotControlBridge::Data::~Data() {
   agent_bridge_joint_action_ = std::nullopt;
   agent_bridge_writer_.reset();
   agent_bridge_joint_writer_.reset();
+
+  pubsub_.reset();
+  agent_bridge_output_stream_sub_.reset();
+  agent_bridge_joint_output_stream_sub_.reset();
 
   motion_update_sub_.reset();
   joint_motion_update_sub_.reset();

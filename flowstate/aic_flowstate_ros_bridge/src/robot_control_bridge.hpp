@@ -24,6 +24,7 @@
 #include "intrinsic/icon/cc_client/client.h"
 #include "intrinsic/icon/cc_client/session.h"
 #include "intrinsic/icon/cc_client/stream.h"
+#include "intrinsic/platform/pubsub/pubsub.h"
 #include "proto/agent_bridge.pb.h"
 #include "rclcpp/rclcpp.hpp"
 #include "robot_control_bridge/agent_bridge_info.h"
@@ -47,8 +48,8 @@ using ::intrinsic::icon::OperationalStatus;
 using ::intrinsic::icon::Session;
 
 //==============================================================================
-const intrinsic::icon::ActionInstanceId kAgentBridgeId(1);
-const intrinsic::icon::ActionInstanceId kAgentBridgeJointId(2);
+constexpr intrinsic::icon::ActionInstanceId kAgentBridgeId(1);
+constexpr intrinsic::icon::ActionInstanceId kAgentBridgeJointId(2);
 
 ///=============================================================================
 class RobotControlBridge : public BridgeInterface {
@@ -75,7 +76,15 @@ class RobotControlBridge : public BridgeInterface {
       std::shared_ptr<aic_control_interfaces::srv::ChangeTargetMode::Response>
           response);
 
-  //   void PollActionStateCallback();
+  absl::StatusOr<std::shared_ptr<intrinsic::Subscription>>
+  CreateActionOutputStreamSubscription(
+      intrinsic::SubscriptionOkCallback<intrinsic_proto::data_logger::LogItem>
+          callback,
+      const std::string& instance,
+      const intrinsic::icon::ActionInstanceId action_instance_id);
+
+  void agentBridgeOutputStreamCallback(
+      const intrinsic_proto::data_logger::LogItem& log_item);
 
   struct Data : public std::enable_shared_from_this<Data> {
     ROSNodeInterfaces node_interfaces_;
@@ -92,6 +101,12 @@ class RobotControlBridge : public BridgeInterface {
     std::unique_ptr<intrinsic::icon::StreamWriterInterface<
         intrinsic_proto::icon::actions::proto::JointMotionUpdate>>
         agent_bridge_joint_writer_;
+
+    std::shared_ptr<intrinsic::PubSub> pubsub_;
+
+    std::shared_ptr<intrinsic::Subscription> agent_bridge_output_stream_sub_;
+    std::shared_ptr<intrinsic::Subscription>
+        agent_bridge_joint_output_stream_sub_;
 
     rclcpp::Subscription<aic_control_interfaces::msg::MotionUpdate>::SharedPtr
         motion_update_sub_;

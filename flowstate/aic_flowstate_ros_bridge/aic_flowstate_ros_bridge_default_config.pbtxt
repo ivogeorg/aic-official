@@ -12,7 +12,7 @@
   external_zenoh_router_address: "tcp/zenoh-router.app-intrinsic-base.svc.cluster.local:7447"
   bridge_plugins: [
     "flowstate_ros_bridge::WorldBridge",
-    "flowstate_ros_bridge::ExecutiveBridge"
+    "flowstate_ros_bridge::ExecutiveBridge",
     "flowstate_ros_bridge::RobotControlBridge"
   ],
   executive_deadline_seconds: 5
