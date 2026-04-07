@@ -104,7 +104,7 @@ install(FILES
   DESTINATION share/${PROJECT_NAME}/${SERVICE_NAME}
 )
 
-install(DIRECTORY config launch proto
+install(DIRECTORY config proto
   DESTINATION share/${PROJECT_NAME}
 )
 
