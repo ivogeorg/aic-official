@@ -495,8 +495,6 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
             last_update.reference_pose(6);
       }
 
-      // todo(johntgz) determine if the units from the proto are the same as in
-      // controller_state
       for (int i = 0; i < 6 && i < ab_status_proto.pose_error_integrated_size();
            ++i) {
         data_->controller_state_.tcp_error[i] =
