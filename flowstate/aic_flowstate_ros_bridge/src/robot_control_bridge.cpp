@@ -32,10 +32,13 @@
 #include "intrinsic/util/grpc/connection_params.h"
 #include "intrinsic/util/proto/get_text_proto.h"
 #include "rclcpp/create_service.hpp"
+#include "rclcpp/create_timer.hpp"
 #include "rclcpp/parameter.hpp"
 
 // Interfaces
 #include "aic_control_interfaces/msg/controller_state.hpp"
+
+using namespace std::chrono_literals;
 
 namespace flowstate_ros_bridge {
 constexpr const char* kServerAddressParamName = "server_address";
@@ -80,11 +83,11 @@ bool RobotControlBridge::initialize(
       data_->node_interfaces_
           .get<rclcpp::node_interfaces::NodeParametersInterface>();
 
-  std::string server_address =
+  data_->server_address_ =
       param_interface->get_parameter(kServerAddressParamName)
           .get_value<std::string>();
-  std::string instance = param_interface->get_parameter(kInstanceParamName)
-                             .get_value<std::string>();
+  data_->instance_ = param_interface->get_parameter(kInstanceParamName)
+                         .get_value<std::string>();
   data_->part_name_ = param_interface->get_parameter(kPartNameParamName)
                           .get_value<std::string>();
   std::filesystem::path task_settings_file =
@@ -114,66 +117,6 @@ bool RobotControlBridge::initialize(
                  "package 'aic_flowstate_ros_bridge'";
     joint_task_settings_file = share_dir / joint_task_settings_file;
   }
-
-  LOG(INFO) << "Connecting to ICON server: " << server_address
-            << ", instance: " << instance << ", part: " << data_->part_name_;
-
-  auto connection_params =
-      intrinsic::ConnectionParams::ResourceInstance(instance, server_address);
-  auto icon_channel_or = intrinsic::Channel::MakeFromAddress(connection_params);
-  if (!icon_channel_or.ok()) {
-    LOG(ERROR) << "Failed to create ICON channel: "
-               << icon_channel_or.status().message().data();
-    throw std::runtime_error("Failed to create ICON channel");
-  }
-
-  Client icon_client(icon_channel_or.value());
-
-  // Check operation status of ICON Server
-  absl::StatusOr<OperationalStatus> operational_status =
-      icon_client.GetOperationalStatus();
-  if (!operational_status.ok()) {
-    LOG(ERROR) << "Failed to retrieve operational status of ICON Server.";
-    throw std::runtime_error(
-        "Failed to retrieve operational status of ICON Server.");
-  }
-  switch (operational_status->state()) {
-    case intrinsic::icon::OperationalState::kDisabled:
-      LOG(ERROR) << "ICON Server operational status: Disabled!";
-      throw std::runtime_error("ICON Server operational status is disabled.");
-      break;
-    case intrinsic::icon::OperationalState::kFaulted:
-      LOG(ERROR) << "ICON Server operational status: Faulted! Reason: "
-                 << operational_status->fault_reason();
-      throw std::runtime_error("ICON Server operational status is faulted.");
-      break;
-    case intrinsic::icon::OperationalState::kEnabled:
-      LOG(INFO) << "ICON Server operational status: Enabled.";
-      break;
-    default:
-      LOG(INFO) << "ICON Server operational status: Unknown.";
-      throw std::runtime_error("ICON Server operational status is unknown.");
-  }
-
-  absl::StatusOr<intrinsic_proto::icon::PartStatus> part_status =
-      icon_client.GetSinglePartStatus(data_->part_name_);
-  if (!part_status.ok()) {
-    LOG(ERROR) << "Failed to retrieve part status from ICON Server: "
-               << part_status.status().message().data();
-    throw std::runtime_error(
-        "Failed to retrieve part status from ICON Server.");
-  }
-  data_->num_joints_ = part_status.value().joint_states_size();
-
-  // Start ICON Session
-  auto session_or =
-      Session::Start(icon_channel_or.value(), {data_->part_name_});
-  if (!session_or.ok()) {
-    LOG(ERROR) << "Failed to start ICON session: "
-               << session_or.status().message().data();
-    throw std::runtime_error("Failed to start ICON session");
-  }
-  data_->session_ = std::move(session_or.value());
 
   // Load TaskSettings from file
   if (!task_settings_file.empty()) {
@@ -207,6 +150,156 @@ bool RobotControlBridge::initialize(
         << "'joint_task_settings_file' parameter is empty. Provide a valid "
            "filepath for loading default task_settings.";
     throw std::runtime_error("'joint_task_settings_file' parameter is empty.");
+  }
+
+  // Create Zenoh subscriptions to the action output streams from the robot
+  // controller server
+  absl::SetFlag(&FLAGS_zenoh_router,
+                param_interface->get_parameter(kFlowstateZenohRouterParamName)
+                    .get_value<std::string>());
+  data_->pubsub_ = std::make_shared<intrinsic::PubSub>(
+      data_->node_interfaces_.get<rclcpp::node_interfaces::NodeBaseInterface>()
+          ->get_name());
+
+  auto agent_bridge_output_stream_sub = CreateActionOutputStreamSubscription(
+      [this](const intrinsic_proto::data_logger::LogItem& msg) {
+        this->agentBridgeOutputStreamCallback(msg);
+      },
+      data_->instance_, kAgentBridgeId);
+  if (!agent_bridge_output_stream_sub.ok()) {
+    LOG(ERROR) << "Unable to create subscription to action output stream for "
+                  "AgentBridge: "
+               << agent_bridge_output_stream_sub.status();
+    throw std::runtime_error(
+        "Unable to create subscription to action output stream for "
+        "AgentBridge");
+  }
+  LOG(INFO) << "Subscribed to AgentBridge output stream topic";
+  data_->agent_bridge_output_stream_sub_ =
+      std::move(*agent_bridge_output_stream_sub);
+
+  auto agent_bridge_joint_output_stream_sub =
+      CreateActionOutputStreamSubscription(
+          [this](const intrinsic_proto::data_logger::LogItem& msg) {
+            this->agentBridgeOutputStreamCallback(msg);
+          },
+          data_->instance_, kAgentBridgeJointId);
+  if (!agent_bridge_joint_output_stream_sub.ok()) {
+    LOG(ERROR) << "Unable to create subscription to action output stream for "
+                  "AgentBridgeJoint: "
+               << agent_bridge_joint_output_stream_sub.status();
+    throw std::runtime_error(
+        "Unable to create subscription to action output stream for "
+        "AgentBridgeJoint");
+  }
+  LOG(INFO) << "Subscribed to AgentBridgeJoint output stream topic";
+  data_->agent_bridge_joint_output_stream_sub_ =
+      std::move(*agent_bridge_joint_output_stream_sub);
+
+  // Create a Zenoh subscriber on the robot_state pubsub topic
+  auto robot_state_sub = CreateRobotStateSubscription(
+      [this](const intrinsic_proto::data_logger::LogItem& msg) {
+        this->RobotStateCallback(msg);
+      },
+      data_->instance_);
+  if (!robot_state_sub.ok()) {
+    LOG(ERROR) << "Unable to create Robot State Subscription: "
+               << robot_state_sub.status();
+    throw std::runtime_error("Unable to create Robot State Subscription");
+  }
+  LOG(INFO) << "Subscribed to Flowstate Robot State topic";
+  data_->robot_state_sub_ = std::move(*robot_state_sub);
+
+  std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface>
+      topics_interface =
+          data_->node_interfaces_
+              .get<rclcpp::node_interfaces::NodeTopicsInterface>();
+  std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface> base_interface =
+      data_->node_interfaces_.get<rclcpp::node_interfaces::NodeBaseInterface>();
+
+  // Reliable QoS subscriptions for motion commands.
+  rclcpp::QoS reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+
+  // ROS Subscriptions to MotionUpdate and JointMotionUpdate commands
+  data_->motion_update_sub_ =
+      rclcpp::create_subscription<aic_control_interfaces::msg::MotionUpdate>(
+          topics_interface, "aic_controller/pose_commands", reliable_qos,
+          [this](
+              const aic_control_interfaces::msg::MotionUpdate::SharedPtr msg) {
+            this->MotionUpdateCallback(msg);
+          });
+  data_->joint_motion_update_sub_ = rclcpp::create_subscription<
+      aic_control_interfaces::msg::JointMotionUpdate>(
+      topics_interface, "aic_controller/joint_commands", reliable_qos,
+      [this](
+          const aic_control_interfaces::msg::JointMotionUpdate::SharedPtr msg) {
+        this->JointMotionUpdateCallback(msg);
+      });
+
+  // ROS Service server for ChangeTargetMode
+  data_->change_target_mode_srv_ =
+      rclcpp::create_service<aic_control_interfaces::srv::ChangeTargetMode>(
+          base_interface,
+          data_->node_interfaces_
+              .get<rclcpp::node_interfaces::NodeServicesInterface>(),
+          "aic_controller/change_target_mode",
+          [this](const std::shared_ptr<
+                     aic_control_interfaces::srv::ChangeTargetMode::Request>
+                     request,
+                 std::shared_ptr<
+                     aic_control_interfaces::srv::ChangeTargetMode::Response>
+                     response) {
+            this->ChangeTargetModeCallback(request, response);
+          },
+          rclcpp::ServicesQoS(), nullptr);
+
+  // ROS Service server for RestartBridge
+  data_->restart_bridge_srv_ = rclcpp::create_service<std_srvs::srv::Trigger>(
+      base_interface,
+      data_->node_interfaces_
+          .get<rclcpp::node_interfaces::NodeServicesInterface>(),
+      "aic_controller/restart_bridge",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        this->RestartBridgeCallback(request, response);
+      },
+      rclcpp::ServicesQoS(), nullptr);
+
+  // Publisher for controller state message
+  data_->controller_state_pub_ =
+      rclcpp::create_publisher<aic_control_interfaces::msg::ControllerState>(
+          topics_interface, "aic_controller/controller_state",
+          rclcpp::SystemDefaultsQoS());
+
+  // Timer to publish controller state at 250 Hz
+  data_->controller_state_timer_ = rclcpp::create_timer(
+      base_interface,
+      data_->node_interfaces_
+          .get<rclcpp::node_interfaces::NodeTimersInterface>(),
+      data_->node_interfaces_
+          .get<rclcpp::node_interfaces::NodeClockInterface>()
+          ->get_clock(),
+      4ms, [this]() {
+        std::lock_guard<std::mutex> lock(data_->controller_state_mutex_);
+
+        data_->controller_state_.header.stamp =
+            data_->node_interfaces_
+                .get<rclcpp::node_interfaces::NodeClockInterface>()
+                ->get_clock()
+                ->now();
+
+        data_->controller_state_.target_mode.mode = data_->target_mode_value_;
+
+        data_->controller_state_pub_->publish(data_->controller_state_);
+      });
+
+  LOG(INFO) << "Connecting to ICON server: " << data_->server_address_
+            << ", instance: " << data_->instance_
+            << ", part: " << data_->part_name_;
+
+  // Start the controller server session
+  if (!startControllerSession()) {
+    throw std::runtime_error("Failed to start ICON client and session");
   }
 
   // Initialize Motion Update defaults
@@ -309,182 +402,17 @@ bool RobotControlBridge::initialize(
     }
   }
 
-  // For both AgentBridge and AgentBridgeJoint actions, define their
-  // ActionDescriptors, then add actions to the session, then create
-  // StreamWriters for each of the actions.
-
-  // Define ActionDescriptors
-  ActionDescriptor agent_bridge_descriptor =
-      ActionDescriptor(
-          intrinsic::icon::AgentBridgeInfo::kActionTypeName, kAgentBridgeId,
-          {{intrinsic::icon::AgentBridgeInfo::kSlotName, data_->part_name_}})
-          .WithFixedParams(data_->agent_bridge_fixed_params_);
-
-  ActionDescriptor agent_bridge_joint_descriptor =
-      ActionDescriptor(intrinsic::icon::AgentBridgeJointInfo::kActionTypeName,
-                       kAgentBridgeJointId,
-                       {{intrinsic::icon::AgentBridgeJointInfo::kSlotName,
-                         data_->part_name_}})
-          .WithFixedParams(data_->agent_bridge_joint_fixed_params_);
-
-  // Add the AgentBridge action to the current session
-  auto agent_bridge_action_or =
-      data_->session_->AddAction(agent_bridge_descriptor);
-  if (!agent_bridge_action_or.ok()) {
-    LOG(ERROR) << "Failed to add AgentBridge Action: "
-               << agent_bridge_action_or.status().message().data();
-    throw std::runtime_error("Failed to add AgentBridge Action");
+  // Start the AgentBridge action on the controller server session
+  if (!startControllerAction()) {
+    throw std::runtime_error("Failed to add and start AgentBridge actions");
   }
-  data_->agent_bridge_action_ = agent_bridge_action_or.value();
-
-  // Add the AgentBridgeJoint action to the current session
-  auto agent_bridge_joint_action_or =
-      data_->session_->AddAction(agent_bridge_joint_descriptor);
-  if (!agent_bridge_joint_action_or.ok()) {
-    LOG(ERROR) << "Failed to add AgentBridgeJoint Action: "
-               << agent_bridge_joint_action_or.status().message().data();
-    throw std::runtime_error("Failed to add AgentBridgeJoint Action");
-  }
-  data_->agent_bridge_joint_action_ = agent_bridge_joint_action_or.value();
-
-  // Create StreamWriter for the AgentBridge action
-  auto agent_bridge_writer_or =
-      data_->session_
-          ->StreamWriter<intrinsic_proto::icon::actions::proto::MotionUpdate>(
-              data_->agent_bridge_action_.value(),
-              intrinsic::icon::AgentBridgeInfo::kStreamingCommandName);
-  if (!agent_bridge_writer_or.ok()) {
-    LOG(ERROR)
-        << "Failed to create MotionUpdate stream writer to AgentBridge action: "
-        << agent_bridge_writer_or.status().message().data();
-    throw std::runtime_error("Failed to create MotionUpdate stream writer");
-  }
-  data_->agent_bridge_writer_ = std::move(agent_bridge_writer_or.value());
-
-  // Create StreamWriter for the AgentBridgeJoint action
-  auto agent_bridge_joint_writer_or = data_->session_->StreamWriter<
-      intrinsic_proto::icon::actions::proto::JointMotionUpdate>(
-      data_->agent_bridge_joint_action_.value(),
-      intrinsic::icon::AgentBridgeJointInfo::kStreamingCommandName);
-  if (!agent_bridge_joint_writer_or.ok()) {
-    LOG(ERROR) << "Failed to create JointMotionUpdate stream writer to "
-                  "AgentBridgeJoint action: "
-               << agent_bridge_joint_writer_or.status().message().data();
-    throw std::runtime_error(
-        "Failed to create JointMotionUpdate stream writer");
-  }
-  data_->agent_bridge_joint_writer_ =
-      std::move(agent_bridge_joint_writer_or.value());
-
-  // The default action to start on initialization is the AgentBridge action
-  auto status =
-      data_->session_->StartAction(data_->agent_bridge_action_.value());
-  if (!status.ok()) {
-    LOG(ERROR) << "Failed to start AgentBridge Action: "
-               << status.message().data();
-    throw std::runtime_error("Failed to start AgentBridge Action");
-  }
-  LOG(INFO) << "Successfully started AgentBridge Action on ICON Server";
-
-  data_->target_mode_value_ =
-      aic_control_interfaces::msg::TargetMode::MODE_CARTESIAN;
-
-  // Create zenoh subscriptions to the action output streams from the robot
-  // controller server
-  absl::SetFlag(&FLAGS_zenoh_router,
-                param_interface->get_parameter(kFlowstateZenohRouterParamName)
-                    .get_value<std::string>());
-  data_->pubsub_ = std::make_shared<intrinsic::PubSub>(
-      data_->node_interfaces_.get<rclcpp::node_interfaces::NodeBaseInterface>()
-          ->get_name());
-
-  auto agent_bridge_output_stream_sub = CreateActionOutputStreamSubscription(
-      [this](const intrinsic_proto::data_logger::LogItem& msg) {
-        this->agentBridgeOutputStreamCallback(msg);
-      },
-      instance, kAgentBridgeId);
-  if (!agent_bridge_output_stream_sub.ok()) {
-    LOG(ERROR) << "Unable to create subscription to action output stream for "
-                  "AgentBridge: "
-               << agent_bridge_output_stream_sub.status();
-    throw std::runtime_error(
-        "Unable to create subscription to action output stream for "
-        "AgentBridge");
-  }
-  LOG(INFO) << "Subscribed to AgentBridge output stream topic";
-  data_->agent_bridge_output_stream_sub_ =
-      std::move(*agent_bridge_output_stream_sub);
-
-  auto agent_bridge_joint_output_stream_sub =
-      CreateActionOutputStreamSubscription(
-          [this](const intrinsic_proto::data_logger::LogItem& msg) {
-            this->agentBridgeOutputStreamCallback(msg);
-          },
-          instance, kAgentBridgeJointId);
-  if (!agent_bridge_joint_output_stream_sub.ok()) {
-    LOG(ERROR) << "Unable to create subscription to action output stream for "
-                  "AgentBridgeJoint: "
-               << agent_bridge_joint_output_stream_sub.status();
-    throw std::runtime_error(
-        "Unable to create subscription to action output stream for "
-        "AgentBridgeJoint");
-  }
-  LOG(INFO) << "Subscribed to AgentBridgeJoint output stream topic";
-  data_->agent_bridge_joint_output_stream_sub_ =
-      std::move(*agent_bridge_joint_output_stream_sub);
-
-  std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface>
-      topics_interface =
-          data_->node_interfaces_
-              .get<rclcpp::node_interfaces::NodeTopicsInterface>();
-
-  // Reliable QoS subscriptions for motion commands.
-  rclcpp::QoS reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
-
-  // ROS Subscriptions to MotionUpdate and JointMotionUpdate commands
-  data_->motion_update_sub_ =
-      rclcpp::create_subscription<aic_control_interfaces::msg::MotionUpdate>(
-          topics_interface, "aic_controller/pose_commands", reliable_qos,
-          [this](
-              const aic_control_interfaces::msg::MotionUpdate::SharedPtr msg) {
-            this->MotionUpdateCallback(msg);
-          });
-  data_->joint_motion_update_sub_ = rclcpp::create_subscription<
-      aic_control_interfaces::msg::JointMotionUpdate>(
-      topics_interface, "aic_controller/joint_commands", reliable_qos,
-      [this](
-          const aic_control_interfaces::msg::JointMotionUpdate::SharedPtr msg) {
-        this->JointMotionUpdateCallback(msg);
-      });
-
-  // ROS Service server for ChangeTargetMode
-  data_->change_target_mode_srv_ =
-      rclcpp::create_service<aic_control_interfaces::srv::ChangeTargetMode>(
-          data_->node_interfaces_
-              .get<rclcpp::node_interfaces::NodeBaseInterface>(),
-          data_->node_interfaces_
-              .get<rclcpp::node_interfaces::NodeServicesInterface>(),
-          "aic_controller/change_target_mode",
-          [this](const std::shared_ptr<
-                     aic_control_interfaces::srv::ChangeTargetMode::Request>
-                     request,
-                 std::shared_ptr<
-                     aic_control_interfaces::srv::ChangeTargetMode::Response>
-                     response) {
-            this->ChangeTargetModeCallback(request, response);
-          },
-          rclcpp::ServicesQoS(), nullptr);
-
-  data_->controller_state_pub_ =
-      rclcpp::create_publisher<aic_control_interfaces::msg::ControllerState>(
-          topics_interface, "aic_controller/controller_state",
-          rclcpp::SystemDefaultsQoS());
 
   LOG(INFO) << "Initialized RobotControlBridge";
 
   return true;
 }
 
+///=============================================================================
 absl::StatusOr<std::shared_ptr<intrinsic::Subscription>>
 RobotControlBridge::CreateActionOutputStreamSubscription(
     intrinsic::SubscriptionOkCallback<intrinsic_proto::data_logger::LogItem>
@@ -503,10 +431,30 @@ RobotControlBridge::CreateActionOutputStreamSubscription(
   return std::make_shared<intrinsic::Subscription>(std::move(*sub));
 }
 
+///=============================================================================
+absl::StatusOr<std::shared_ptr<intrinsic::Subscription>>
+RobotControlBridge::CreateRobotStateSubscription(
+    intrinsic::SubscriptionOkCallback<intrinsic_proto::data_logger::LogItem>
+        callback,
+    const std::string& robot_controller_instance) {
+  const std::string topic_name =
+      absl::StrFormat("/icon/%s/robot_status", robot_controller_instance);
+
+  auto sub = data_->pubsub_->CreateSubscription(
+      topic_name, intrinsic::TopicConfig(), callback);
+  if (!sub.ok()) {
+    return sub.status();
+  }
+  return std::make_shared<intrinsic::Subscription>(std::move(*sub));
+}
+
+///=============================================================================
 void RobotControlBridge::agentBridgeOutputStreamCallback(
     const intrinsic_proto::data_logger::LogItem& log_item) {
-  rclcpp::Clock clock;
-  const rclcpp::Time t_start = clock.now();
+  auto clock = data_->node_interfaces_
+                   .get<rclcpp::node_interfaces::NodeClockInterface>()
+                   ->get_clock();
+  const rclcpp::Time t_start = clock->now();
 
   const auto& payload = log_item.payload();
 
@@ -517,8 +465,7 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
     return;
   }
 
-  aic_control_interfaces::msg::ControllerState controller_state;
-  controller_state.header.stamp = clock.now();
+  std::lock_guard<std::mutex> lock(data_->controller_state_mutex_);
 
   switch (stream_out_with_meta_proto.action_instance_id()) {
     case kAgentBridgeId.value(): {
@@ -531,39 +478,20 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
       }
 
       const auto& last_update = ab_status_proto.last_control_update();
-      if (last_update.sensed_pose_size() == 7) {
-        controller_state.tcp_pose.position.x = last_update.sensed_pose(0);
-        controller_state.tcp_pose.position.y = last_update.sensed_pose(1);
-        controller_state.tcp_pose.position.z = last_update.sensed_pose(2);
-        controller_state.tcp_pose.orientation.x = last_update.sensed_pose(3);
-        controller_state.tcp_pose.orientation.y = last_update.sensed_pose(4);
-        controller_state.tcp_pose.orientation.z = last_update.sensed_pose(5);
-        controller_state.tcp_pose.orientation.w = last_update.sensed_pose(6);
-      }
-      if (last_update.sensed_vel_size() == 6) {
-        controller_state.tcp_velocity.linear.x = last_update.sensed_vel(0);
-        controller_state.tcp_velocity.linear.y = last_update.sensed_vel(1);
-        controller_state.tcp_velocity.linear.z = last_update.sensed_vel(2);
-        controller_state.tcp_velocity.angular.x = last_update.sensed_vel(3);
-        controller_state.tcp_velocity.angular.y = last_update.sensed_vel(4);
-        controller_state.tcp_velocity.angular.z = last_update.sensed_vel(5);
-      } else {
-        LOG(ERROR) << "last_update.sensed_vel_size() != 6";
-      }
       if (last_update.reference_pose_size() == 7) {
-        controller_state.reference_tcp_pose.position.x =
+        data_->controller_state_.reference_tcp_pose.position.x =
             last_update.reference_pose(0);
-        controller_state.reference_tcp_pose.position.y =
+        data_->controller_state_.reference_tcp_pose.position.y =
             last_update.reference_pose(1);
-        controller_state.reference_tcp_pose.position.z =
+        data_->controller_state_.reference_tcp_pose.position.z =
             last_update.reference_pose(2);
-        controller_state.reference_tcp_pose.orientation.x =
+        data_->controller_state_.reference_tcp_pose.orientation.x =
             last_update.reference_pose(3);
-        controller_state.reference_tcp_pose.orientation.y =
+        data_->controller_state_.reference_tcp_pose.orientation.y =
             last_update.reference_pose(4);
-        controller_state.reference_tcp_pose.orientation.z =
+        data_->controller_state_.reference_tcp_pose.orientation.z =
             last_update.reference_pose(5);
-        controller_state.reference_tcp_pose.orientation.w =
+        data_->controller_state_.reference_tcp_pose.orientation.w =
             last_update.reference_pose(6);
       }
 
@@ -571,12 +499,9 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
       // controller_state
       for (int i = 0; i < 6 && i < ab_status_proto.pose_error_integrated_size();
            ++i) {
-        controller_state.tcp_error[i] =
+        data_->controller_state_.tcp_error[i] =
             ab_status_proto.pose_error_integrated(i);
       }
-
-      controller_state.target_mode.mode =
-          aic_control_interfaces::msg::TargetMode::MODE_CARTESIAN;
 
       break;
     }
@@ -591,22 +516,26 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
       }
 
       const auto& reference_state = ab_joint_status_proto.reference_state();
+      data_->controller_state_.reference_joint_state.positions.clear();
       for (double pos : reference_state.position()) {
-        controller_state.reference_joint_state.positions.push_back(pos);
+        data_->controller_state_.reference_joint_state.positions.push_back(pos);
       }
+      data_->controller_state_.reference_joint_state.velocities.clear();
       for (double vel : reference_state.velocity()) {
-        controller_state.reference_joint_state.velocities.push_back(vel);
+        data_->controller_state_.reference_joint_state.velocities.push_back(
+            vel);
       }
+      data_->controller_state_.reference_joint_state.accelerations.clear();
       for (double acc : reference_state.acceleration()) {
-        controller_state.reference_joint_state.accelerations.push_back(acc);
+        data_->controller_state_.reference_joint_state.accelerations.push_back(
+            acc);
       }
       const auto& joint_torque = ab_joint_status_proto.joint_torque();
+      data_->controller_state_.reference_joint_state.effort.clear();
       for (double torque : joint_torque.joints()) {
-        controller_state.reference_joint_state.effort.push_back(torque);
+        data_->controller_state_.reference_joint_state.effort.push_back(torque);
       }
 
-      controller_state.target_mode.mode =
-          aic_control_interfaces::msg::TargetMode::MODE_JOINT;
       break;
     }
     default:
@@ -616,11 +545,244 @@ void RobotControlBridge::agentBridgeOutputStreamCallback(
   }
 
   // print a timing snapshot every 5000 messages
-  const rclcpp::Duration elapsed = clock.now() - t_start;
+  const rclcpp::Duration elapsed = clock->now() - t_start;
   LOG_EVERY_N(INFO, 5000) << absl::StrFormat(
-      "controller_state translation time: %.3f ms", 1000.0 * elapsed.seconds());
+      "AgentBridge output stream translation time: %.3f ms",
+      1000.0 * elapsed.seconds());
+}
 
-  data_->controller_state_pub_->publish(controller_state);
+///=============================================================================
+void RobotControlBridge::RobotStateCallback(
+    const intrinsic_proto::data_logger::LogItem& log_item) {
+  std::lock_guard<std::mutex> lock(data_->controller_state_mutex_);
+
+  const intrinsic_proto::icon::RobotStatus& icon_robot_status =
+      log_item.payload().icon_robot_status();
+
+  auto it = icon_robot_status.status_map().find(data_->part_name_);
+  if (it != icon_robot_status.status_map().end()) {
+    const intrinsic_proto::icon::PartStatus& part_status = it->second;
+
+    const auto& base_t_tip_sensed = part_status.base_t_tip_sensed();
+    data_->controller_state_.tcp_pose.position.x = base_t_tip_sensed.pos().x();
+    data_->controller_state_.tcp_pose.position.y = base_t_tip_sensed.pos().y();
+    data_->controller_state_.tcp_pose.position.z = base_t_tip_sensed.pos().z();
+    data_->controller_state_.tcp_pose.orientation.x =
+        base_t_tip_sensed.rot().qx();
+    data_->controller_state_.tcp_pose.orientation.y =
+        base_t_tip_sensed.rot().qy();
+    data_->controller_state_.tcp_pose.orientation.z =
+        base_t_tip_sensed.rot().qz();
+    data_->controller_state_.tcp_pose.orientation.w =
+        base_t_tip_sensed.rot().qw();
+
+    const auto& base_twist_tip_sensed = part_status.base_twist_tip_sensed();
+    data_->controller_state_.tcp_velocity.linear.x = base_twist_tip_sensed.x();
+    data_->controller_state_.tcp_velocity.linear.y = base_twist_tip_sensed.y();
+    data_->controller_state_.tcp_velocity.linear.z = base_twist_tip_sensed.z();
+    data_->controller_state_.tcp_velocity.angular.x =
+        base_twist_tip_sensed.rx();
+    data_->controller_state_.tcp_velocity.angular.y =
+        base_twist_tip_sensed.ry();
+    data_->controller_state_.tcp_velocity.angular.z =
+        base_twist_tip_sensed.rz();
+
+  } else {
+    LOG_EVERY_N(ERROR, 100)
+        << "Error: Unable to find robot part [" << data_->part_name_
+        << "] within robot_status message!";
+  }
+}
+
+///=============================================================================
+void RobotControlBridge::RestartBridgeCallback(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+  LOG(INFO) << "Received request to restart controller bridge";
+
+  // Stop all currently running actions
+  if (data_->session_) {
+    auto status = data_->session_->StopAllActions();
+    if (!status.ok()) {
+      LOG(ERROR) << "Failed to stop all actions on ICON Server: "
+                 << status.message().data();
+    }
+  }
+
+  // Reset session, actions and stream writers
+  data_->session_.reset();
+  data_->agent_bridge_action_ = std::nullopt;
+  data_->agent_bridge_joint_action_ = std::nullopt;
+  data_->agent_bridge_writer_.reset();
+  data_->agent_bridge_joint_writer_.reset();
+
+  if (!startControllerSession()) {
+    LOG(ERROR) << "Failed to start ICON client and session";
+    response->success = false;
+    response->message = "Failed to start ICON client and session";
+    return;
+  }
+
+  if (!startControllerAction()) {
+    LOG(ERROR) << "Failed to add and start AgentBridge actions";
+    response->success = false;
+    response->message = "Failed to add and start AgentBridge actions";
+    return;
+  }
+
+  response->success = true;
+  response->message = "Successfully restarted controller bridge";
+}
+
+///=============================================================================
+bool RobotControlBridge::startControllerSession() {
+  auto connection_params = intrinsic::ConnectionParams::ResourceInstance(
+      data_->instance_, data_->server_address_);
+
+  auto icon_channel_or = intrinsic::Channel::MakeFromAddress(connection_params);
+  if (!icon_channel_or.ok()) {
+    LOG(ERROR) << "Failed to create ICON channel: "
+               << icon_channel_or.status().message().data();
+    return false;
+  }
+  Client icon_client(icon_channel_or.value());
+
+  // Check operation status of ICON Server
+  absl::StatusOr<OperationalStatus> operational_status =
+      icon_client.GetOperationalStatus();
+  if (!operational_status.ok()) {
+    LOG(ERROR) << "Failed to retrieve operational status of ICON Server.";
+    return false;
+  }
+  switch (operational_status->state()) {
+    case intrinsic::icon::OperationalState::kDisabled:
+      LOG(ERROR) << "ICON Server operational status: Disabled!";
+      return false;
+      break;
+    case intrinsic::icon::OperationalState::kFaulted:
+      LOG(ERROR) << "ICON Server operational status: Faulted! Reason: "
+                 << operational_status->fault_reason();
+      return false;
+      break;
+    case intrinsic::icon::OperationalState::kEnabled:
+      LOG(INFO) << "ICON Server operational status: Enabled.";
+      break;
+    default:
+      LOG(INFO) << "ICON Server operational status: Unknown.";
+      return false;
+  }
+
+  // Get part status information such as number of joints
+  absl::StatusOr<intrinsic_proto::icon::PartStatus> part_status =
+      icon_client.GetSinglePartStatus(data_->part_name_);
+  if (!part_status.ok()) {
+    LOG(ERROR) << "Failed to retrieve part status from ICON Server: "
+               << part_status.status().message().data();
+    return false;
+  }
+  data_->num_joints_ = part_status.value().joint_states_size();
+
+  // Start ICON Session
+  auto session_or =
+      Session::Start(icon_channel_or.value(), {data_->part_name_});
+  if (!session_or.ok()) {
+    LOG(ERROR) << "Failed to start ICON session: "
+               << session_or.status().message().data();
+    return false;
+  }
+  data_->session_ = std::move(session_or.value());
+
+  LOG(INFO) << "Successfully started ICON session";
+
+  return true;
+}
+
+///=============================================================================
+bool RobotControlBridge::startControllerAction() {
+  if (!data_->session_) {
+    LOG(ERROR) << "A session has not been created. Unable to add actions.";
+    return false;
+  }
+
+  // Define ActionDescriptors for both the AgentBridge and AgentBridgeJoint
+  // actions
+  ActionDescriptor agent_bridge_descriptor =
+      ActionDescriptor(
+          intrinsic::icon::AgentBridgeInfo::kActionTypeName, kAgentBridgeId,
+          {{intrinsic::icon::AgentBridgeInfo::kSlotName, data_->part_name_}})
+          .WithFixedParams(data_->agent_bridge_fixed_params_);
+  ActionDescriptor agent_bridge_joint_descriptor =
+      ActionDescriptor(intrinsic::icon::AgentBridgeJointInfo::kActionTypeName,
+                       kAgentBridgeJointId,
+                       {{intrinsic::icon::AgentBridgeJointInfo::kSlotName,
+                         data_->part_name_}})
+          .WithFixedParams(data_->agent_bridge_joint_fixed_params_);
+
+  // Add the AgentBridge and AgentBridgeJoint actions to the session, then
+  // create StreamWriters for each of the actions.
+
+  // Add the AgentBridge action to the current session
+  auto agent_bridge_action_or =
+      data_->session_->AddAction(agent_bridge_descriptor);
+  if (!agent_bridge_action_or.ok()) {
+    LOG(ERROR) << "Failed to add AgentBridge Action: "
+               << agent_bridge_action_or.status().message().data();
+    return false;
+  }
+  data_->agent_bridge_action_ = agent_bridge_action_or.value();
+
+  // Add the AgentBridgeJoint action to the current session
+  auto agent_bridge_joint_action_or =
+      data_->session_->AddAction(agent_bridge_joint_descriptor);
+  if (!agent_bridge_joint_action_or.ok()) {
+    LOG(ERROR) << "Failed to add AgentBridgeJoint Action: "
+               << agent_bridge_joint_action_or.status().message().data();
+    return false;
+  }
+  data_->agent_bridge_joint_action_ = agent_bridge_joint_action_or.value();
+
+  // Create StreamWriter for the AgentBridge action
+  auto agent_bridge_writer_or =
+      data_->session_
+          ->StreamWriter<intrinsic_proto::icon::actions::proto::MotionUpdate>(
+              data_->agent_bridge_action_.value(),
+              intrinsic::icon::AgentBridgeInfo::kStreamingCommandName);
+  if (!agent_bridge_writer_or.ok()) {
+    LOG(ERROR)
+        << "Failed to create MotionUpdate stream writer to AgentBridge action: "
+        << agent_bridge_writer_or.status().message().data();
+    return false;
+  }
+  data_->agent_bridge_writer_ = std::move(agent_bridge_writer_or.value());
+
+  // Create StreamWriter for the AgentBridgeJoint action
+  auto agent_bridge_joint_writer_or = data_->session_->StreamWriter<
+      intrinsic_proto::icon::actions::proto::JointMotionUpdate>(
+      data_->agent_bridge_joint_action_.value(),
+      intrinsic::icon::AgentBridgeJointInfo::kStreamingCommandName);
+  if (!agent_bridge_joint_writer_or.ok()) {
+    LOG(ERROR) << "Failed to create JointMotionUpdate stream writer to "
+                  "AgentBridgeJoint action: "
+               << agent_bridge_joint_writer_or.status().message().data();
+    return false;
+  }
+  data_->agent_bridge_joint_writer_ =
+      std::move(agent_bridge_joint_writer_or.value());
+
+  // The default action to start on initialization is the AgentBridge action
+  auto status =
+      data_->session_->StartAction(data_->agent_bridge_action_.value());
+  if (!status.ok()) {
+    LOG(ERROR) << "Failed to start AgentBridge Action: "
+               << status.message().data();
+    return false;
+  }
+  LOG(INFO) << "Successfully started AgentBridge Action on ICON Server";
+
+  data_->target_mode_value_ =
+      aic_control_interfaces::msg::TargetMode::MODE_CARTESIAN;
+
+  return true;
 }
 
 ///=============================================================================
@@ -895,11 +1057,14 @@ RobotControlBridge::Data::~Data() {
   pubsub_.reset();
   agent_bridge_output_stream_sub_.reset();
   agent_bridge_joint_output_stream_sub_.reset();
+  robot_state_sub_.reset();
 
   motion_update_sub_.reset();
   joint_motion_update_sub_.reset();
   change_target_mode_srv_.reset();
+  restart_bridge_srv_.reset();
   controller_state_pub_.reset();
+  controller_state_timer_.reset();
 }
 }  // namespace flowstate_ros_bridge
 

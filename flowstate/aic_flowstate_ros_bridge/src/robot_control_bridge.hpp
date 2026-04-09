@@ -19,6 +19,7 @@
 #define BRIDGES_ROBOT_CONTROL_BRIDGE_HPP_
 
 #include <memory>
+#include <mutex>
 
 #include "flowstate_ros_bridge/bridge_interface.hpp"
 #include "intrinsic/icon/cc_client/client.h"
@@ -37,6 +38,7 @@
 #include "aic_control_interfaces/msg/target_mode.hpp"
 #include "aic_control_interfaces/msg/trajectory_generation_mode.hpp"
 #include "aic_control_interfaces/srv/change_target_mode.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 namespace flowstate_ros_bridge {
 
@@ -76,6 +78,24 @@ class RobotControlBridge : public BridgeInterface {
       std::shared_ptr<aic_control_interfaces::srv::ChangeTargetMode::Response>
           response);
 
+  void RestartBridgeCallback(
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+
+  /**
+   * @brief Starts a session on the controller server
+   *
+   */
+  bool startControllerSession();
+
+  /**
+   * @brief Adds both the AgentBridge and AgentBridgeJoint action on the
+   * controller session. Then proceeds to start the AgentBridge action on the
+   * session.
+   *
+   */
+  bool startControllerAction();
+
   absl::StatusOr<std::shared_ptr<intrinsic::Subscription>>
   CreateActionOutputStreamSubscription(
       intrinsic::SubscriptionOkCallback<intrinsic_proto::data_logger::LogItem>
@@ -83,7 +103,27 @@ class RobotControlBridge : public BridgeInterface {
       const std::string& instance,
       const intrinsic::icon::ActionInstanceId action_instance_id);
 
+  absl::StatusOr<std::shared_ptr<intrinsic::Subscription>>
+  CreateRobotStateSubscription(
+      intrinsic::SubscriptionOkCallback<intrinsic_proto::data_logger::LogItem>
+          callback,
+      const std::string& robot_controller_instance);
+
+  /**
+   * @brief Subscriber callback for retrieving reference TCP and reference joint
+   * states
+   *
+   * @param log_item
+   */
   void agentBridgeOutputStreamCallback(
+      const intrinsic_proto::data_logger::LogItem& log_item);
+
+  /**
+   * @brief Subscriber callback for retrieving sensed TCP poses and velocity
+   *
+   * @param log_item
+   */
+  void RobotStateCallback(
       const intrinsic_proto::data_logger::LogItem& log_item);
 
   struct Data : public std::enable_shared_from_this<Data> {
@@ -107,21 +147,31 @@ class RobotControlBridge : public BridgeInterface {
     std::shared_ptr<intrinsic::Subscription> agent_bridge_output_stream_sub_;
     std::shared_ptr<intrinsic::Subscription>
         agent_bridge_joint_output_stream_sub_;
+    std::shared_ptr<intrinsic::Subscription> robot_state_sub_;
 
     rclcpp::Subscription<aic_control_interfaces::msg::MotionUpdate>::SharedPtr
         motion_update_sub_;
     rclcpp::Subscription<aic_control_interfaces::msg::JointMotionUpdate>::
         SharedPtr joint_motion_update_sub_;
-    rclcpp::Service<aic_control_interfaces::srv::ChangeTargetMode>::SharedPtr
-        change_target_mode_srv_;
 
     rclcpp::Publisher<aic_control_interfaces::msg::ControllerState>::SharedPtr
         controller_state_pub_;
 
+    rclcpp::Service<aic_control_interfaces::srv::ChangeTargetMode>::SharedPtr
+        change_target_mode_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr restart_bridge_srv_;
+
+    rclcpp::TimerBase::SharedPtr controller_state_timer_;
+
     std::string part_name_;
+    std::string instance_;
+    std::string server_address_;
     std::size_t num_joints_;
     uint8_t target_mode_value_ =
         aic_control_interfaces::msg::TargetMode::MODE_UNSPECIFIED;
+
+    aic_control_interfaces::msg::ControllerState controller_state_;
+    std::mutex controller_state_mutex_;
 
     ~Data();
   };

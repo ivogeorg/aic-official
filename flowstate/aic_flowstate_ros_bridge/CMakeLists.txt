@@ -18,6 +18,7 @@ set(dep_pkgs
   flowstate_ros_bridge
   pluginlib
   rclcpp
+  std_srvs
 )
 foreach(pkg ${dep_pkgs})
   find_package(${pkg} REQUIRED)
@@ -53,6 +54,7 @@ target_link_libraries(robot_control_bridge
   pluginlib::pluginlib
   rclcpp::rclcpp
   ${aic_control_interfaces_TARGETS}
+  ${std_srvs_TARGETS}
 )
 target_compile_features(robot_control_bridge PUBLIC cxx_std_17)
 
