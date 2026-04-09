@@ -106,12 +106,13 @@ install(FILES
   DESTINATION share/${PROJECT_NAME}/${SERVICE_NAME}
 )
 
-install(DIRECTORY config proto
+install(DIRECTORY config proto launch
   DESTINATION share/${PROJECT_NAME}
 )
 
 install(PROGRAMS
   scripts/test_robot_control_bridge.py
+  scripts/mock_pub.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
