@@ -31,6 +31,7 @@
 #include "intrinsic/util/grpc/channel.h"
 #include "intrinsic/util/grpc/connection_params.h"
 #include "intrinsic/util/proto/get_text_proto.h"
+#include "rclcpp/clock.hpp"
 #include "rclcpp/create_service.hpp"
 #include "rclcpp/create_timer.hpp"
 #include "rclcpp/parameter.hpp"
@@ -216,6 +217,9 @@ bool RobotControlBridge::initialize(
               .get<rclcpp::node_interfaces::NodeTopicsInterface>();
   std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface> base_interface =
       data_->node_interfaces_.get<rclcpp::node_interfaces::NodeBaseInterface>();
+  auto clock = data_->node_interfaces_
+                   .get<rclcpp::node_interfaces::NodeClockInterface>()
+                   ->get_clock();
 
   // Reliable QoS subscriptions for motion commands.
   rclcpp::QoS reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
@@ -281,133 +285,50 @@ bool RobotControlBridge::initialize(
           ->get_clock(),
       4ms, [this]() {
         std::lock_guard<std::mutex> lock(data_->controller_state_mutex_);
-
         data_->controller_state_.header.stamp =
             data_->node_interfaces_
                 .get<rclcpp::node_interfaces::NodeClockInterface>()
                 ->get_clock()
                 ->now();
-
         data_->controller_state_.target_mode.mode = data_->target_mode_value_;
-
         data_->controller_state_pub_->publish(data_->controller_state_);
       });
+
+  // Add a clock jump callback to detect when the clock jump, which is triggered
+  // by a "reset to initial" for the Flowstate scene
+  rcl_jump_threshold_t jump_threshold;
+  jump_threshold.on_clock_change = true;
+  // Values of 0 would disable detecting forward/backward time jumps.
+  // Trigger pos_jump callback if the time jumps forward/backward by at least 1
+  // second (1e9 nanoseconds)
+  // jump_threshold.min_forward.nanoseconds = 1 * (1000000000);
+  jump_threshold.min_forward.nanoseconds = 0;
+  jump_threshold.min_backward.nanoseconds = 1 * (-1000000000);
+  data_->jump_handler_ =
+      data_->node_interfaces_
+          .get<rclcpp::node_interfaces::NodeClockInterface>()
+          ->get_clock()
+          ->create_jump_callback(
+              nullptr,
+              [this](const rcl_time_jump_t&) {
+                LOG(WARNING)
+                    << "Jump in time detected due to reset! Proceeding to "
+                       "restart the controller bridge.";
+                if (!this->restartControllerBridge()) {
+                  LOG(INFO) << "Failed to restart controller bridge.";
+                }
+              },
+              jump_threshold);
 
   LOG(INFO) << "Connecting to ICON server: " << data_->server_address_
             << ", instance: " << data_->instance_
             << ", part: " << data_->part_name_;
 
-  // Start the controller server session
-  if (!startControllerSession()) {
-    throw std::runtime_error("Failed to start ICON client and session");
+  if (!restartControllerBridge()) {
+    throw std::runtime_error("Failed to start controller bridge.");
   }
 
-  // Initialize Motion Update defaults
-  auto* initial_motion_update =
-      data_->agent_bridge_fixed_params_.mutable_motion_update();
-  if (!initial_motion_update->has_target_state()) {
-    initial_motion_update->set_trajectory_generation_mode(
-        intrinsic_proto::icon::actions::proto::TrajectoryGenerationMode::
-            VELOCITY);
-    auto* target_state = initial_motion_update->mutable_target_state();
-    target_state->mutable_velocity()->Resize(6, 0.0);
-
-    // Use max values from task settings for initial stiffness, damping, and
-    // mass
-    auto* target_stiffness = initial_motion_update->mutable_target_stiffness();
-    auto* target_damping = initial_motion_update->mutable_target_damping();
-    auto* target_mass = initial_motion_update->mutable_target_mass();
-
-    target_stiffness->mutable_data()->Resize(36, 0.0);
-    target_damping->mutable_data()->Resize(36, 0.0);
-    target_mass->mutable_data()->Resize(36, 0.0);
-
-    if (data_->agent_bridge_fixed_params_.task_settings().has_max_stiffness() &&
-        data_->agent_bridge_fixed_params_.task_settings().has_max_damping() &&
-        data_->agent_bridge_fixed_params_.task_settings()
-            .has_mass_for_critical_damping()) {
-      const auto& max_stiffness =
-          data_->agent_bridge_fixed_params_.task_settings().max_stiffness();
-      const auto& max_damping =
-          data_->agent_bridge_fixed_params_.task_settings().max_damping();
-      const auto& critical_mass =
-          data_->agent_bridge_fixed_params_.task_settings()
-              .mass_for_critical_damping();
-
-      target_stiffness->set_data(0, max_stiffness.x());
-      target_stiffness->set_data(7, max_stiffness.y());
-      target_stiffness->set_data(14, max_stiffness.z());
-      target_stiffness->set_data(21, max_stiffness.rx());
-      target_stiffness->set_data(28, max_stiffness.ry());
-      target_stiffness->set_data(35, max_stiffness.rz());
-
-      target_damping->set_data(0, max_damping.x());
-      target_damping->set_data(7, max_damping.y());
-      target_damping->set_data(14, max_damping.z());
-      target_damping->set_data(21, max_damping.rx());
-      target_damping->set_data(28, max_damping.ry());
-      target_damping->set_data(35, max_damping.rz());
-
-      target_mass->set_data(0, critical_mass.x());
-      target_mass->set_data(7, critical_mass.y());
-      target_mass->set_data(14, critical_mass.z());
-      target_mass->set_data(21, critical_mass.rx());
-      target_mass->set_data(28, critical_mass.ry());
-      target_mass->set_data(35, critical_mass.rz());
-    } else {
-      LOG(ERROR) << "Task settings missing max_stiffness, max_damping, or "
-                    "mass_for_critical_damping parameters.";
-      throw std::runtime_error(
-          "Task settings missing max_stiffness, max_damping, or "
-          "mass_for_critical_damping parameters.");
-    }
-
-    auto* fw = initial_motion_update->mutable_feedforward_wrench_at_tip();
-    fw->set_x(0);
-    fw->set_y(0);
-    fw->set_z(0);
-    fw->set_rx(0);
-    fw->set_ry(0);
-    fw->set_rz(0);
-  }
-
-  // Initialize Joint Motion Update defaults
-  auto* initial_joint_motion_update =
-      data_->agent_bridge_joint_fixed_params_.mutable_motion_update();
-  initial_joint_motion_update->set_trajectory_generation_mode(
-      intrinsic_proto::icon::actions::proto::TrajectoryGenerationMode::
-          VELOCITY);
-  initial_joint_motion_update->mutable_target_state()
-      ->mutable_velocity()
-      ->Resize(data_->num_joints_, 0.0);
-
-  auto* target_joint_stiffness =
-      initial_joint_motion_update->mutable_target_stiffness();
-  auto* target_joint_damping =
-      initial_joint_motion_update->mutable_target_damping();
-
-  target_joint_stiffness->mutable_joints()->Resize(data_->num_joints_, 0.0);
-  target_joint_damping->mutable_joints()->Resize(data_->num_joints_, 0.0);
-
-  if (data_->agent_bridge_joint_fixed_params_.task_settings().has_stiffness() &&
-      data_->agent_bridge_joint_fixed_params_.task_settings().has_damping()) {
-    const auto& stiffness =
-        data_->agent_bridge_joint_fixed_params_.task_settings().stiffness();
-    const auto& damping =
-        data_->agent_bridge_joint_fixed_params_.task_settings().damping();
-
-    for (std::size_t i = 0; i < data_->num_joints_; i++) {
-      target_joint_stiffness->set_joints(i, stiffness.joints(i));
-      target_joint_damping->set_joints(i, damping.joints(i));
-    }
-  }
-
-  // Start the AgentBridge action on the controller server session
-  if (!startControllerAction()) {
-    throw std::runtime_error("Failed to add and start AgentBridge actions");
-  }
-
-  LOG(INFO) << "Initialized RobotControlBridge";
+  LOG(INFO) << "Initialized RobotControlBridge.";
 
   return true;
 }
@@ -598,6 +519,17 @@ void RobotControlBridge::RestartBridgeCallback(
     std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
   LOG(INFO) << "Received request to restart controller bridge";
 
+  if (!restartControllerBridge()) {
+    response->success = false;
+    response->message = "Failed to restart the controller bridge";
+  }
+
+  response->success = true;
+  response->message = "Successfully restarted controller bridge";
+}
+
+///=============================================================================
+bool RobotControlBridge::restartControllerBridge() {
   // Stop all currently running actions
   if (data_->session_) {
     auto status = data_->session_->StopAllActions();
@@ -607,7 +539,7 @@ void RobotControlBridge::RestartBridgeCallback(
     }
   }
 
-  // Reset session, actions and stream writers
+  // Reset client, session, actions and stream writers
   data_->session_.reset();
   data_->agent_bridge_action_ = std::nullopt;
   data_->agent_bridge_joint_action_ = std::nullopt;
@@ -616,81 +548,18 @@ void RobotControlBridge::RestartBridgeCallback(
 
   if (!startControllerSession()) {
     LOG(ERROR) << "Failed to start ICON client and session";
-    response->success = false;
-    response->message = "Failed to start ICON client and session";
-    return;
+    return false;
+  }
+
+  if (!resetMotionUpdate()) {
+    LOG(ERROR) << "Failed to reset MotionUpdate and JointMotionUpdate commands";
+    return false;
   }
 
   if (!startControllerAction()) {
     LOG(ERROR) << "Failed to add and start AgentBridge actions";
-    response->success = false;
-    response->message = "Failed to add and start AgentBridge actions";
-    return;
-  }
-
-  response->success = true;
-  response->message = "Successfully restarted controller bridge";
-}
-
-///=============================================================================
-bool RobotControlBridge::startControllerSession() {
-  auto connection_params = intrinsic::ConnectionParams::ResourceInstance(
-      data_->instance_, data_->server_address_);
-
-  auto icon_channel_or = intrinsic::Channel::MakeFromAddress(connection_params);
-  if (!icon_channel_or.ok()) {
-    LOG(ERROR) << "Failed to create ICON channel: "
-               << icon_channel_or.status().message().data();
     return false;
   }
-  Client icon_client(icon_channel_or.value());
-
-  // Check operation status of ICON Server
-  absl::StatusOr<OperationalStatus> operational_status =
-      icon_client.GetOperationalStatus();
-  if (!operational_status.ok()) {
-    LOG(ERROR) << "Failed to retrieve operational status of ICON Server.";
-    return false;
-  }
-  switch (operational_status->state()) {
-    case intrinsic::icon::OperationalState::kDisabled:
-      LOG(ERROR) << "ICON Server operational status: Disabled!";
-      return false;
-      break;
-    case intrinsic::icon::OperationalState::kFaulted:
-      LOG(ERROR) << "ICON Server operational status: Faulted! Reason: "
-                 << operational_status->fault_reason();
-      return false;
-      break;
-    case intrinsic::icon::OperationalState::kEnabled:
-      LOG(INFO) << "ICON Server operational status: Enabled.";
-      break;
-    default:
-      LOG(INFO) << "ICON Server operational status: Unknown.";
-      return false;
-  }
-
-  // Get part status information such as number of joints
-  absl::StatusOr<intrinsic_proto::icon::PartStatus> part_status =
-      icon_client.GetSinglePartStatus(data_->part_name_);
-  if (!part_status.ok()) {
-    LOG(ERROR) << "Failed to retrieve part status from ICON Server: "
-               << part_status.status().message().data();
-    return false;
-  }
-  data_->num_joints_ = part_status.value().joint_states_size();
-
-  // Start ICON Session
-  auto session_or =
-      Session::Start(icon_channel_or.value(), {data_->part_name_});
-  if (!session_or.ok()) {
-    LOG(ERROR) << "Failed to start ICON session: "
-               << session_or.status().message().data();
-    return false;
-  }
-  data_->session_ = std::move(session_or.value());
-
-  LOG(INFO) << "Successfully started ICON session";
 
   return true;
 }
@@ -709,6 +578,7 @@ bool RobotControlBridge::startControllerAction() {
           intrinsic::icon::AgentBridgeInfo::kActionTypeName, kAgentBridgeId,
           {{intrinsic::icon::AgentBridgeInfo::kSlotName, data_->part_name_}})
           .WithFixedParams(data_->agent_bridge_fixed_params_);
+
   ActionDescriptor agent_bridge_joint_descriptor =
       ActionDescriptor(intrinsic::icon::AgentBridgeJointInfo::kActionTypeName,
                        kAgentBridgeJointId,
@@ -779,6 +649,177 @@ bool RobotControlBridge::startControllerAction() {
 
   data_->target_mode_value_ =
       aic_control_interfaces::msg::TargetMode::MODE_CARTESIAN;
+
+  return true;
+}
+
+///=============================================================================
+bool RobotControlBridge::startControllerSession() {
+  auto connection_params = intrinsic::ConnectionParams::ResourceInstance(
+      data_->instance_, data_->server_address_);
+
+  auto icon_channel_or = intrinsic::Channel::MakeFromAddress(connection_params);
+  if (!icon_channel_or.ok()) {
+    LOG(ERROR) << "Failed to create ICON channel: "
+               << icon_channel_or.status().message().data();
+    return false;
+  }
+  auto client = Client(icon_channel_or.value());
+
+  // Check operation status of ICON Server
+  absl::StatusOr<OperationalStatus> operational_status =
+      client.GetOperationalStatus();
+  if (!operational_status.ok()) {
+    LOG(ERROR) << "Failed to retrieve operational status of ICON Server.";
+    return false;
+  }
+  switch (operational_status->state()) {
+    case intrinsic::icon::OperationalState::kDisabled:
+      LOG(ERROR) << "ICON Server operational status: Disabled!";
+      return false;
+      break;
+    case intrinsic::icon::OperationalState::kFaulted:
+      LOG(ERROR) << "ICON Server operational status: Faulted! Reason: "
+                 << operational_status->fault_reason();
+      return false;
+      break;
+    case intrinsic::icon::OperationalState::kEnabled:
+      LOG(INFO) << "ICON Server operational status: Enabled.";
+      break;
+    default:
+      LOG(INFO) << "ICON Server operational status: Unknown.";
+      return false;
+  }
+
+  // Get part status information such as number of joints
+  absl::StatusOr<intrinsic_proto::icon::PartStatus> part_status =
+      client.GetSinglePartStatus(data_->part_name_);
+  if (!part_status.ok()) {
+    LOG(ERROR) << "Failed to retrieve part status from ICON Server: "
+               << part_status.status().message().data();
+    return false;
+  }
+  data_->num_joints_ = part_status.value().joint_states_size();
+
+  // Start ICON Session
+  auto session_or =
+      Session::Start(icon_channel_or.value(), {data_->part_name_});
+  if (!session_or.ok()) {
+    LOG(ERROR) << "Failed to start ICON session: "
+               << session_or.status().message().data();
+    return false;
+  }
+  data_->session_ = std::move(session_or.value());
+
+  LOG(INFO) << "Successfully started ICON session";
+
+  return true;
+}
+
+///=============================================================================
+bool RobotControlBridge::resetMotionUpdate() {
+  // Initialize Motion Update defaults
+  auto* initial_motion_update =
+      data_->agent_bridge_fixed_params_.mutable_motion_update();
+  if (!initial_motion_update->has_target_state()) {
+    initial_motion_update->set_trajectory_generation_mode(
+        intrinsic_proto::icon::actions::proto::TrajectoryGenerationMode::
+            VELOCITY);
+    auto* target_state = initial_motion_update->mutable_target_state();
+    target_state->mutable_velocity()->Resize(6, 0.0);
+
+    // Use max values from task settings for initial stiffness, damping, and
+    // mass
+    auto* target_stiffness = initial_motion_update->mutable_target_stiffness();
+    auto* target_damping = initial_motion_update->mutable_target_damping();
+    auto* target_mass = initial_motion_update->mutable_target_mass();
+
+    target_stiffness->mutable_data()->Resize(36, 0.0);
+    target_damping->mutable_data()->Resize(36, 0.0);
+    target_mass->mutable_data()->Resize(36, 0.0);
+
+    if (data_->agent_bridge_fixed_params_.task_settings().has_max_stiffness() &&
+        data_->agent_bridge_fixed_params_.task_settings().has_max_damping() &&
+        data_->agent_bridge_fixed_params_.task_settings()
+            .has_mass_for_critical_damping()) {
+      const auto& max_stiffness =
+          data_->agent_bridge_fixed_params_.task_settings().max_stiffness();
+      const auto& max_damping =
+          data_->agent_bridge_fixed_params_.task_settings().max_damping();
+      const auto& critical_mass =
+          data_->agent_bridge_fixed_params_.task_settings()
+              .mass_for_critical_damping();
+
+      target_stiffness->set_data(0, max_stiffness.x());
+      target_stiffness->set_data(7, max_stiffness.y());
+      target_stiffness->set_data(14, max_stiffness.z());
+      target_stiffness->set_data(21, max_stiffness.rx());
+      target_stiffness->set_data(28, max_stiffness.ry());
+      target_stiffness->set_data(35, max_stiffness.rz());
+
+      target_damping->set_data(0, max_damping.x());
+      target_damping->set_data(7, max_damping.y());
+      target_damping->set_data(14, max_damping.z());
+      target_damping->set_data(21, max_damping.rx());
+      target_damping->set_data(28, max_damping.ry());
+      target_damping->set_data(35, max_damping.rz());
+
+      target_mass->set_data(0, critical_mass.x());
+      target_mass->set_data(7, critical_mass.y());
+      target_mass->set_data(14, critical_mass.z());
+      target_mass->set_data(21, critical_mass.rx());
+      target_mass->set_data(28, critical_mass.ry());
+      target_mass->set_data(35, critical_mass.rz());
+    } else {
+      LOG(ERROR) << "Task settings missing max_stiffness, max_damping, or "
+                    "mass_for_critical_damping parameters.";
+      return false;
+    }
+
+    auto* fw = initial_motion_update->mutable_feedforward_wrench_at_tip();
+    fw->set_x(0);
+    fw->set_y(0);
+    fw->set_z(0);
+    fw->set_rx(0);
+    fw->set_ry(0);
+    fw->set_rz(0);
+  }
+
+  // Initialize Joint Motion Update defaults
+  if (data_->num_joints_ == 0) {
+    LOG(ERROR) << "Error initializing JointMotionUpdate with num_joints_==0. ";
+    return false;
+  }
+
+  auto* initial_joint_motion_update =
+      data_->agent_bridge_joint_fixed_params_.mutable_motion_update();
+  initial_joint_motion_update->set_trajectory_generation_mode(
+      intrinsic_proto::icon::actions::proto::TrajectoryGenerationMode::
+          VELOCITY);
+  initial_joint_motion_update->mutable_target_state()
+      ->mutable_velocity()
+      ->Resize(data_->num_joints_, 0.0);
+
+  auto* target_joint_stiffness =
+      initial_joint_motion_update->mutable_target_stiffness();
+  auto* target_joint_damping =
+      initial_joint_motion_update->mutable_target_damping();
+
+  target_joint_stiffness->mutable_joints()->Resize(data_->num_joints_, 0.0);
+  target_joint_damping->mutable_joints()->Resize(data_->num_joints_, 0.0);
+
+  if (data_->agent_bridge_joint_fixed_params_.task_settings().has_stiffness() &&
+      data_->agent_bridge_joint_fixed_params_.task_settings().has_damping()) {
+    const auto& stiffness =
+        data_->agent_bridge_joint_fixed_params_.task_settings().stiffness();
+    const auto& damping =
+        data_->agent_bridge_joint_fixed_params_.task_settings().damping();
+
+    for (std::size_t i = 0; i < data_->num_joints_; i++) {
+      target_joint_stiffness->set_joints(i, stiffness.joints(i));
+      target_joint_damping->set_joints(i, damping.joints(i));
+    }
+  }
 
   return true;
 }

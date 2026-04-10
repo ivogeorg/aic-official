@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -78,6 +77,7 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {
+                        "use_sim_time": True,
                         "autostart": True,
                         "service_tunnel": LaunchConfiguration("service_tunnel"),
                         "flowstate_zenoh_router_address": LaunchConfiguration(

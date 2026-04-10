@@ -9,7 +9,7 @@ ROS_DISTRO="jazzy"
 show_help() {
   echo "Usage: $(basename "$0") [OPTIONS]"
   echo ""
-  echo "Build and bundle the aic_flowstate_ros_bridge container image for Flowstate."
+  echo "Build and bundle the AIC model container image for Flowstate."
   echo ""
   echo "Options:"
   echo "  -h, --help           Show this help message and exit"
@@ -38,8 +38,12 @@ done
 set -o errexit
 set -o verbose
 src/sdk-ros/scripts/build_container.sh \
+  --ros_distro "$ROS_DISTRO" \
   --service_name aic_flowstate_ros_bridge \
   --service_package aic_flowstate_ros_bridge \
-  --dependencies nlohmann-json3-dev \
-  --ros_distro "$ROS_DISTRO"
-src/sdk-ros/scripts/build_bundle.sh --service_name aic_flowstate_ros_bridge --service_package aic_flowstate_ros_bridge
+  --dependencies nlohmann-json3-dev
+src/sdk-ros/scripts/build_bundle.sh \
+  --service_name aic_flowstate_ros_bridge \
+  --service_package aic_flowstate_ros_bridge \
+  --manifest_path src/aic/flowstate/aic_flowstate_ros_bridge/aic_flowstate_ros_bridge.manifest.textproto \
+  --default_config src/aic/flowstate/aic_flowstate_ros_bridge/aic_flowstate_ros_bridge_default_config.pbtxt

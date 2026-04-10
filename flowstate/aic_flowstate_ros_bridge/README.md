@@ -24,7 +24,7 @@ cd ~/ws_aic
 
 ```bash
 # 1. Export path to side-loaded service bundle
-export SERVICE_BUNDLE=~/ws_aic/images/aic_flowstate_ros_bridge.bundle.tar
+export SERVICE_BUNDLE=~/ws_aic/images/aic_flowstate_ros_bridge/aic_flowstate_ros_bridge.bundle.tar
 
 # 2. Add Organization
 export INTRINSIC_ORGANIZATION="<ORG_NAME>"
@@ -37,3 +37,12 @@ export INTRINSIC_CLUSTER="vmp-xxxx-xxxxxxx"
   --cluster $INTRINSIC_CLUSTER \
   $SERVICE_BUNDLE
 ```
+
+<!-- todo(johntgz) documentation -->
+## Interfaces
+
+### Services
+
+### Published Topics
+
+### Subscribed Topics

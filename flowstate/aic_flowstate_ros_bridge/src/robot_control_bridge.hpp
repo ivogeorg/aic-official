@@ -85,6 +85,8 @@ class RobotControlBridge : public BridgeInterface {
   /**
    * @brief Starts a session on the controller server
    *
+   * @return true Successfully started an ICON session
+   * @return false Failed to start an ICON session
    */
   bool startControllerSession();
 
@@ -93,8 +95,27 @@ class RobotControlBridge : public BridgeInterface {
    * controller session. Then proceeds to start the AgentBridge action on the
    * session.
    *
+   * @return true Successfully added actions and started the AgentBridge actions
+   * @return false Failed to add actions and and start the AgentBridge action
    */
   bool startControllerAction();
+
+  /**
+   * @brief Reset the MotionUpdate and JointMotionUpdate commands by populating
+   * them with default values from the task_settings config
+   *
+   * @return true Successfully reset the motion commands
+   * @return false Failed to reset the motion commands
+   */
+  bool resetMotionUpdate();
+
+  /**
+   * @brief Restarts the controller bridge
+   *
+   * @return true
+   * @return false
+   */
+  bool restartControllerBridge();
 
   absl::StatusOr<std::shared_ptr<intrinsic::Subscription>>
   CreateActionOutputStreamSubscription(
@@ -162,6 +183,9 @@ class RobotControlBridge : public BridgeInterface {
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr restart_bridge_srv_;
 
     rclcpp::TimerBase::SharedPtr controller_state_timer_;
+
+    // Handler for clock jumps
+    rclcpp::JumpHandler::SharedPtr jump_handler_;
 
     std::string part_name_;
     std::string instance_;

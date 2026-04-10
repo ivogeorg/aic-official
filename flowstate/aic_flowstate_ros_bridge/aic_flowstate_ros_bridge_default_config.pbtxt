@@ -33,5 +33,6 @@
     part_name: "arm"
     task_settings_file: "config/default_task_settings.pbtxt"
     joint_task_settings_file: "config/default_joint_task_settings.pbtxt"
+    use_sim_time: true
   },
 }
