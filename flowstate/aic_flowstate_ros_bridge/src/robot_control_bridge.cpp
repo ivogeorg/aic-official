@@ -298,11 +298,10 @@ bool RobotControlBridge::initialize(
   // by a "reset to initial" for the Flowstate scene
   rcl_jump_threshold_t jump_threshold;
   jump_threshold.on_clock_change = true;
-  // Values of 0 would disable detecting forward/backward time jumps.
-  // Trigger pos_jump callback if the time jumps forward/backward by at least 1
-  // second (1e9 nanoseconds)
-  // jump_threshold.min_forward.nanoseconds = 1 * (1000000000);
+  // Values of 0 would disable callbacks from forward time jumps.
   jump_threshold.min_forward.nanoseconds = 0;
+  // Trigger restart of controller bridge if the time jumps backward by at least
+  // 1 second
   jump_threshold.min_backward.nanoseconds = 1 * (-1000000000);
   data_->jump_handler_ =
       data_->node_interfaces_
