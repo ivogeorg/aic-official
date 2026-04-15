@@ -52,23 +52,30 @@ def generate_launch_description():
                 "part_name", default_value="arm", description="Part to control"
             ),
             DeclareLaunchArgument(
-                "robot_joint_state_topic", default_value="/joint_states", description=""
+                "robot_joint_state_topic",
+                default_value="/joint_states",
+                description="Topic to publish joint state data on",
             ),
             DeclareLaunchArgument(
                 "force_torque_topic",
                 default_value="/fts_broadcaster/wrench",
-                description="",
+                description="Topic to publish F/T sensor data on",
             ),
             DeclareLaunchArgument(
                 "robot_base_frame_id",
                 default_value="robot/robot/base_link",
-                description="",
+                description="Frame ID of robot base to be used in robot_joint_state_topic",
             ),
             DeclareLaunchArgument(
                 "force_torque_sensor_frame_id",
                 default_value="force_torque_sensor/force_torque_sensor/AtiForceTorqueSensor",
-                description="",
+                description="Frame ID of F/T sensor to be used in force_torque_topic",
             ),
+            # DeclareLaunchArgument(
+            #     "override_joint_names",
+            #     default_value="",
+            #     description="",
+            # ),
             LifecycleNode(
                 package="flowstate_ros_bridge",
                 executable="flowstate_ros_bridge",
@@ -108,6 +115,14 @@ def generate_launch_description():
                             "config",
                             "default_joint_task_settings.pbtxt",
                         ),
+                        "override_joint_names": [
+                            "shoulder_pan_joint",
+                            "shoulder_lift_joint",
+                            "elbow_joint",
+                            "wrist_1_joint",
+                            "wrist_2_joint",
+                            "wrist_3_joint",
+                        ],
                     }
                 ],
             ),
