@@ -19,6 +19,7 @@
 
 #include <filesystem>
 #include <string>
+#include <utility>
 
 #include "absl/flags/flag.h"
 #include "absl/log/log.h"
@@ -298,7 +299,10 @@ bool RobotControlBridge::initialize(
             << ", instance: " << data_->instance_
             << ", part: " << data_->part_name_;
 
-  restartControllerBridge();
+  if (!restartControllerBridge()) {
+    LOG(ERROR) << "Failed to connect to controller bridge.";
+    // todo(johntgz) add retry mechanism
+  }
 
   LOG(INFO) << "Initialized RobotControlBridge.";
 
@@ -488,10 +492,9 @@ void RobotControlBridge::RobotStateCallback(
 
   if (data_->last_part_status_timestamp_ns_.has_value() &&
       current_timestamp_ns < data_->last_part_status_timestamp_ns_.value()) {
-    LOG(WARNING) << "Jump backward in time detected for controller server "
-                    "timestamp, indicating a reset. Proceeding to restart the "
-                    "controller bridge.";
-    restartControllerBridge();
+    LOG(WARNING) << "Backwards time jump detected for controller server "
+                    "timestamp, indicating a reset.";
+    data_->connected_to_controller_ = false;
   }
   data_->last_part_status_timestamp_ns_ = current_timestamp_ns;
 }
@@ -502,14 +505,18 @@ void RobotControlBridge::RestartBridgeCallback(
     std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
   LOG(INFO) << "Received request to restart controller bridge";
 
-  restartControllerBridge();
+  if (!restartControllerBridge()) {
+    response->success = false;
+    response->message = "Failed to restart controller bridge";
+    return;
+  }
 
   response->success = true;
-  response->message = "Restarting controller bridge...";
+  response->message = "Successfully restarted controller bridge";
 }
 
 ///=============================================================================
-void RobotControlBridge::restartControllerBridge() {
+bool RobotControlBridge::restartControllerBridge() {
   // Stop all currently running actions
   if (data_->session_) {
     auto status = data_->session_->StopAllActions();
@@ -526,44 +533,25 @@ void RobotControlBridge::restartControllerBridge() {
   data_->agent_bridge_writer_.reset();
   data_->agent_bridge_joint_writer_.reset();
 
-  // Create a timer to retry connecting to the controller server to avoid
-  // blocking other callbacks
-  if (data_->retry_connection_timer_.get() == nullptr) {
-    // todo(johntgz) remove ;pg after debug
-    LOG(INFO)
-        << "Starting a timer to retry connecting to the controller server";
-    data_->retry_connection_timer_ = rclcpp::create_timer(
-        data_->node_interfaces_
-            .get<rclcpp::node_interfaces::NodeBaseInterface>(),
-        data_->node_interfaces_
-            .get<rclcpp::node_interfaces::NodeTimersInterface>(),
-        data_->node_interfaces_
-            .get<rclcpp::node_interfaces::NodeClockInterface>()
-            ->get_clock(),
-        50ms, [this]() -> void {
-          if (!startControllerSession()) {
-            LOG(ERROR) << "Failed to start ICON client and session. Retrying "
-                          "connection...";
-            return;
-          }
-
-          if (!resetMotionUpdate()) {
-            LOG(ERROR) << "Failed to reset MotionUpdate and JointMotionUpdate "
-                          "commands. Retrying connection...";
-            return;
-          }
-
-          if (!startControllerAction()) {
-            LOG(ERROR) << "Failed to add and start AgentBridge actions. "
-                          "Retrying connection...";
-            return;
-          }
-
-          LOG(INFO) << "Successfully established a connection to the "
-                       "controller server!";
-          data_->retry_connection_timer_.reset();
-        });
+  if (!startControllerSession()) {
+    LOG(ERROR) << "Failed to start ICON client and session.";
+    return false;
   }
+
+  if (!resetMotionUpdate()) {
+    LOG(ERROR) << "Failed to reset MotionUpdate and JointMotionUpdate "
+                  "commands.";
+    return false;
+  }
+
+  if (!startControllerAction()) {
+    LOG(ERROR) << "Failed to add and start AgentBridge actions.";
+    return false;
+  }
+
+  LOG(INFO) << "Successfully established a connection to the "
+               "controller server!";
+  return true;
 }
 
 ///=============================================================================
@@ -906,6 +894,12 @@ void RobotControlBridge::ChangeTargetModeCallback(
 ///=============================================================================
 void RobotControlBridge::MotionUpdateCallback(
     const aic_control_interfaces::msg::MotionUpdate::SharedPtr msg) {
+  if (!data_->connected_to_controller_) {
+    LOG(INFO) << "Restarting connection to controller server";
+    data_->connected_to_controller_ = restartControllerBridge();
+    return;
+  }
+
   if (!data_->agent_bridge_writer_) {
     LOG(ERROR) << "MotionUpdate stream writer not initialized.";
     return;
@@ -1004,6 +998,12 @@ void RobotControlBridge::MotionUpdateCallback(
 ///=============================================================================
 void RobotControlBridge::JointMotionUpdateCallback(
     const aic_control_interfaces::msg::JointMotionUpdate::SharedPtr msg) {
+  if (!data_->connected_to_controller_) {
+    LOG(INFO) << "Restarting connection to controller server";
+    data_->connected_to_controller_ = restartControllerBridge();
+    return;
+  }
+
   if (!data_->agent_bridge_joint_writer_) {
     LOG(ERROR) << "JointMotionUpdate stream writer not initialized.";
     return;
@@ -1082,6 +1082,13 @@ void RobotControlBridge::JointMotionUpdateCallback(
 }
 
 ///=============================================================================
+RobotControlBridge::Data::Data()
+    : connected_to_controller_{false},
+      target_mode_value_{
+          aic_control_interfaces::msg::TargetMode::MODE_UNSPECIFIED},
+      last_part_status_timestamp_ns_{0} {}
+
+///=============================================================================
 RobotControlBridge::Data::~Data() {
   auto status = session_->StopAllActions();
   if (!status.ok()) {
@@ -1106,7 +1113,11 @@ RobotControlBridge::Data::~Data() {
   restart_bridge_srv_.reset();
   controller_state_pub_.reset();
   controller_state_timer_.reset();
-  retry_connection_timer_.reset();
+
+  connected_to_controller_ = false;
+  target_mode_value_ =
+      aic_control_interfaces::msg::TargetMode::MODE_UNSPECIFIED;
+  last_part_status_timestamp_ns_ = 0;
 }
 }  // namespace flowstate_ros_bridge
 

@@ -113,8 +113,10 @@ class RobotControlBridge : public BridgeInterface {
    * @brief Restarts the controller bridge. Creates a timer to retry connecting
    * to the controller server to avoid blocking other callbacks.
    *
+   * @return true Successfully restarted the controller bridge
+   * @return false Failed to restart the controller bridge
    */
-  void restartControllerBridge();
+  bool restartControllerBridge();
 
   absl::StatusOr<std::shared_ptr<intrinsic::Subscription>>
   CreateActionOutputStreamSubscription(
@@ -183,20 +185,19 @@ class RobotControlBridge : public BridgeInterface {
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr restart_bridge_srv_;
 
     rclcpp::TimerBase::SharedPtr controller_state_timer_;
-    rclcpp::TimerBase::SharedPtr retry_connection_timer_;
 
+    bool connected_to_controller_;
     std::string part_name_;
     std::string instance_;
     std::string server_address_;
-    int num_retry_connect_;
     std::size_t num_joints_;
-    uint8_t target_mode_value_ =
-        aic_control_interfaces::msg::TargetMode::MODE_UNSPECIFIED;
-    std::optional<int64_t> last_part_status_timestamp_ns_ = 0;
+    uint8_t target_mode_value_;
+    std::optional<int64_t> last_part_status_timestamp_ns_;
 
     aic_control_interfaces::msg::ControllerState controller_state_;
     std::mutex controller_state_mutex_;
 
+    Data();
     ~Data();
   };
   std::shared_ptr<Data> data_;
