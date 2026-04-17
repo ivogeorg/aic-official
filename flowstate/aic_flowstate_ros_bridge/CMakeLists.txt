@@ -104,7 +104,6 @@ install(DIRECTORY config proto launch
 
 install(PROGRAMS
   scripts/test_robot_control_bridge.py
-  scripts/mock_pub.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
