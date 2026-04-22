@@ -1,0 +1,9 @@
+assistant: claude
+
+worktree:
+  baseBranch: main
+  initSubmodules: false   # repo uses vcstool (.repos), not git submodules
+
+defaults:
+  loadDefaultCommands: true
+  loadDefaultWorkflows: true
