@@ -37,7 +37,7 @@ For cloud evaluation, all participant submissions will be evaluated on the same 
 
 - **vCPU:** 64 cores
 - **RAM:** 256 GiB
-- **GPU:** 1 x NVIDIA L4 Tensor Core
+- **GPU:** 1 x NVIDIA L4 Tensor Core (**NOTE:** RunPod has [L4 VRAM 24 GiB for $0.39 on demand](https://console.runpod.io/deploy?type=GPU&gpu=L4&count=1&template=runpod-torch-v240).)
 - **VRAM:** 24 GiB
 
 ---
